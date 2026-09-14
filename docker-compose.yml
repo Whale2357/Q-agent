@@ -1,0 +1,59 @@
+services:
+  extract:
+    build:
+      context: .
+      dockerfile: services/extract/Dockerfile
+    ports:
+      - "4001:4001"
+    environment:
+      PORT: 4001
+      CORS_ORIGIN: http://localhost:3000
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  engine:
+    build:
+      context: .
+      dockerfile: services/engine/Dockerfile
+    ports:
+      - "4002:4002"
+    environment:
+      PORT: 4002
+      CORS_ORIGIN: http://localhost:3000
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4002/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    image: node:22-alpine
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: sh -c "npm install && npm run build -w @q-agent/contracts && npm run dev -w @q-agent/web"
+    ports:
+      - "3000:3000"
+    environment:
+      EXTRACT_SERVICE_URL: http://extract:4001
+      ENGINE_SERVICE_URL: http://engine:4002
+    depends_on:
+      extract:
+        condition: service_healthy
+      engine:
+        condition: service_healthy

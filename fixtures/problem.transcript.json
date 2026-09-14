@@ -1,0 +1,13 @@
+{
+  "transcript_id": "tr_problem_001",
+  "language": "ko",
+  "source": "text",
+  "text": "A: 전환율이 떨어져. 랜딩 카피를 바꿔야 해.\nB: 맞아, 버튼 색도 바꿔보자.\nA: 지난번에도 카피 바꿨는데 똑같았잖아.\nB: 그래도 카피가 문제야. 다들 그렇게 말하잖아.",
+  "segments": [
+    { "speaker": "A", "text": "전환율이 떨어져. 랜딩 카피를 바꿔야 해." },
+    { "speaker": "B", "text": "맞아, 버튼 색도 바꿔보자." },
+    { "speaker": "A", "text": "지난번에도 카피 바꿨는데 똑같았잖아." },
+    { "speaker": "B", "text": "그래도 카피가 문제야. 다들 그렇게 말하잖아." }
+  ],
+  "meta": { "duration_ms": null, "warning": null }
+}

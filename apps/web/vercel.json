@@ -1,0 +1,6 @@
+{
+  "buildCommand": "npm run build -w @q-agent/contracts && npm run build -w @q-agent/web",
+  "installCommand": "npm install",
+  "framework": "nextjs",
+  "outputDirectory": "apps/web/.next"
+}
