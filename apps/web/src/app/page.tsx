@@ -1,6 +1,11 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import {
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import type {
   BadgeCode,
   DiagnoseResponse,
@@ -143,8 +148,16 @@ export default function HomePage() {
     setTimeout(() => setCopiedId(null), 1400);
   }
 
+  function trackGlassLight(event: ReactPointerEvent<HTMLElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    event.currentTarget.style.setProperty("--glass-x", `${event.clientX - bounds.left}px`);
+    event.currentTarget.style.setProperty("--glass-y", `${event.clientY - bounds.top}px`);
+  }
+
   return (
     <main className="site-shell">
+      <div className="ambient-light ambient-light-one" aria-hidden="true" />
+      <div className="ambient-light ambient-light-two" aria-hidden="true" />
       <header className="topbar">
         <a className="brand" href="#top" aria-label="Q-Agent 홈">
           <span className="brand-mark"><Icon name="spark" /></span><span>Q-Agent</span>
@@ -165,7 +178,7 @@ export default function HomePage() {
           </div>
         </section>
 
-        <section className="workspace" aria-label="회의 질문 진단 워크스페이스">
+        <section className="workspace" aria-label="회의 질문 진단 워크스페이스" onPointerMove={trackGlassLight}>
           <div className="input-panel">
             <div className="panel-heading">
               <div><span className="step-number">01</span><div><h2>회의 맥락</h2><p>텍스트를 붙여넣거나 음성을 업로드하세요.</p></div></div>
