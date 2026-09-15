@@ -502,18 +502,20 @@ Mock 개발은 이 JSON만으로 진행한다.
 | 브랜치 | 용도 |
 | --- | --- |
 | `main` | 배포 가능 상태만. 직접 push 금지(가능하면) |
-| `develop` | 통합 브랜치 |
+| `develop` | **MVP1** 통합 브랜치 |
+| `develop_2` | **MVP2** 통합 브랜치 (범위·규칙은 [MVP2.md](./MVP2.md)) |
 | `feat/front-*` | 프론트 |
 | `feat/extract-*` | 추출 |
-| `feat/engine-*` | 생성+선발 |
+| `feat/engine-*` | 생성+선발 (MVP2에서는 선발 중심) |
 | `chore/contracts-*` | 계약 변경 전용 |
 
 규칙:
 
-1. **작은 PR, 하루 1회 이상 develop에 병합**을 목표로 한다.  
-2. `main` ← `develop` 은 배포 직전(D4, D6)에만.  
+1. **작은 PR, 하루 1회 이상** 해당 통합 브랜치(`develop` 또는 `develop_2`)에 병합을 목표로 한다.  
+2. MVP1 배포: `main` ← `develop`. MVP2 컷오버: [MVP2.md](./MVP2.md) §5.  
 3. 계약 변경 PR은 **구현 PR과 분리**한다.  
-4. 머지 전: 자기 모듈 `/health` + fixture 기반 스모크.
+4. 머지 전: 자기 모듈 `/health` + fixture 기반 스모크.  
+5. **MVP2 작업 PR base는 `develop_2`.** MVP1 핫픽스는 `develop` → `develop_2` 일방향 동기화.
 
 ### 4.2 계약 우선 (Contract-First)
 
