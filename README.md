@@ -15,6 +15,7 @@ scripts/smoke-test.mjs 모듈 통신 검증
 
 협업 규칙: [`docs/KICKOFF.md`](docs/KICKOFF.md)  
 최종 기획: [`docs/최종_기획안.md`](docs/최종_기획안.md)  
+엔진 스택·로직·로드맵: [`docs/ENGINE_ROADMAP.md`](docs/ENGINE_ROADMAP.md)  
 인프라·통신 검증: [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md)
 
 ## 로컬 실행 (권장)

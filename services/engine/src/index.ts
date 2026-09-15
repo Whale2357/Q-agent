@@ -1,7 +1,10 @@
 import cors from "cors";
 import express from "express";
 import { CONTRACT_VERSION, type DiagnoseRequest } from "@q-agent/contracts";
-import { diagnoseMock, fail } from "./lib";
+import { LlmTimeoutError } from "./llm/client";
+import { fail } from "./lib";
+import { diagnose, resolveMode } from "./pipeline/diagnose";
+import { PROMPT_VERSION } from "./pipeline/types";
 
 const PORT = Number(process.env.ENGINE_PORT || process.env.PORT || 4002);
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://localhost:3000";
@@ -15,11 +18,13 @@ app.get("/health", (_req, res) => {
     ok: true,
     service: "engine",
     contract_version: CONTRACT_VERSION,
+    prompt_version: PROMPT_VERSION,
+    mode: resolveMode(),
     ts: new Date().toISOString(),
   });
 });
 
-app.post("/v1/diagnose", (req, res) => {
+app.post("/v1/diagnose", async (req, res) => {
   try {
     const body = req.body as DiagnoseRequest;
     if (!body?.transcript?.text || !body.preset || !body.tone) {
@@ -42,10 +47,15 @@ app.post("/v1/diagnose", (req, res) => {
         .json(fail("INVALID_INPUT", "tone은 1~4 이어야 합니다."));
     }
 
-    const result = diagnoseMock(body);
+    const result = await diagnose(body);
     return res.json(result);
   } catch (err) {
     console.error("[engine]", err);
+    if (err instanceof LlmTimeoutError) {
+      return res
+        .status(504)
+        .json(fail("LLM_TIMEOUT", err.message, true));
+    }
     return res
       .status(500)
       .json(fail("INTERNAL", "진단 중 오류가 발생했습니다.", true));
@@ -53,5 +63,7 @@ app.post("/v1/diagnose", (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`[engine] listening on http://localhost:${PORT}`);
+  console.log(
+    `[engine] listening on http://localhost:${PORT} mode=${resolveMode()}`
+  );
 });

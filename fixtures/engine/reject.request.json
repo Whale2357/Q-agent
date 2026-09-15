@@ -1,0 +1,12 @@
+{
+  "transcript": {
+    "transcript_id": "tr_reject_golden",
+    "language": "ko",
+    "source": "text",
+    "text": "[REJECT]",
+    "segments": [{ "text": "[REJECT]" }],
+    "meta": { "duration_ms": null, "warning": null }
+  },
+  "preset": "decision",
+  "tone": 2
+}
