@@ -1,12 +1,21 @@
 # Q-Agent realtime service
 
-LangGraph 없이 순수 Python으로 동작하는 로컬 회의 파이프라인입니다.
+LangGraph 없이 순수 Python으로 동작하며, 로컬 모델과 OpenAI API를 같은
+회의 파이프라인에서 선택할 수 있습니다.
 
 ```text
 마이크 -> Silero VAD -> faster-whisper -> SQLite
       -> Question Context State -> Qwen3 8B
       -> 질문 후보 8개 -> 3대 지표 배치 평가 -> 활성 질문 최대 3개
       -> 사용자 요청 또는 20초 정적 -> 질문 한 문장 출력
+```
+
+공개 배포에서는 프런트 계약을 바꾸지 않고 제공자만 교체합니다.
+
+```text
+브라우저 마이크 -> Silero VAD -> OpenAI STT -> SQLite
+              -> Question Context State -> OpenAI LLM
+              -> 기존 질문 생성/평가/선발 -> 브라우저
 ```
 
 기존 `services/extract`, `services/engine`의 TypeScript 데모 계약은 변경하지 않습니다.
@@ -67,7 +76,7 @@ q-agent-realtime-server --host 127.0.0.1 --port 8765
 
 - `WS /v1/realtime`: 16 kHz mono Float32 PCM 스트림을 받아 전사·질문 이벤트 반환
 - `POST /v1/text`: 텍스트 테스트도 동일한 Context → Generator → Evaluator 파이프라인 사용
-- `GET /health`: Ollama 모델 준비 여부와 Whisper 로드 상태 확인
+- `GET /health`: 현재 LLM/STT 제공자와 모델 준비 상태 확인
 
 WebSocket 메시지 순서는 `start` → PCM binary frames → `stop`입니다. 서버는
 `ready`, `status`, `transcript`, `questions`, `stopped`, `error` 이벤트를 반환합니다.
@@ -76,9 +85,40 @@ WebSocket 메시지 순서는 `start` → PCM binary frames → `stop`입니다.
 
 기본 DB는 `data/q-agent.db`입니다. 로컬 DB와 녹음 원본은 Git에 포함하지 않습니다.
 
-## 모델 설정
+## 모델 제공자 설정
 
-모든 LLM 역할은 동일한 `qwen3:8b`를 공유하며 Ollama 요청만 역할별로 분리합니다.
+환경변수를 지정하지 않으면 기존 로컬 모드인 Ollama와 faster-whisper를
+사용합니다.
+
+| 모드 | `LLM_PROVIDER` | `STT_PROVIDER` | 필요한 설정 |
+| --- | --- | --- | --- |
+| 완전 로컬 | `ollama` | `local` | Ollama + 로컬 Whisper |
+| 공개 API 배포 | `openai` | `openai` | `OPENAI_API_KEY` |
+| 혼합 | `ollama` 또는 `openai` | `local` 또는 `openai` | 선택한 제공자 설정 |
+
+CPU 서버 공개 배포 설정은 다음과 같습니다.
+
+```dotenv
+LLM_PROVIDER=openai
+STT_PROVIDER=openai
+OPENAI_API_KEY=서버에만_저장하는_키
+OPENAI_LLM_MODEL=gpt-4o-mini
+OPENAI_STT_MODEL=gpt-4o-mini-transcribe
+CORS_ORIGIN=https://프런트주소.example
+```
+
+API 키는 `NEXT_PUBLIC_*` 변수나 브라우저 코드에 넣지 않습니다. realtime
+서버에서만 읽어 OpenAI Responses API의 Structured Outputs와 Audio
+Transcriptions API를 호출하며, 응답 저장은 `store: false`로 요청합니다.
+전체 변수는 [`.env.example`](.env.example)에 정리되어 있습니다.
+
+OpenAI 모드에서는 실제 녹음을 시작하기 전에 API 키와 각 모델 접근 권한을
+확인합니다.
+
+## 로컬 모델 설정
+
+로컬 모드의 모든 LLM 역할은 동일한 `qwen3:8b`를 공유하며 Ollama 요청만
+역할별로 분리합니다.
 
 | 역할 | thinking | temperature |
 | --- | --- | --- |
@@ -94,4 +134,5 @@ WebSocket 메시지 순서는 `start` → PCM binary frames → `stop`입니다.
 python -m unittest discover -s tests -v
 ```
 
-테스트는 마이크, GPU, Ollama 없이 실행됩니다.
+테스트는 마이크, GPU, Ollama 없이 실행됩니다. OpenAI 연동 테스트도 모의 HTTP
+서버를 사용하므로 실제 API 키와 비용이 필요하지 않습니다.

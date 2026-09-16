@@ -27,7 +27,7 @@ cd services/realtime
 python -m pip install -e .
 cd ../..
 
-# Ollama에 qwen3:8b가 설치·실행된 상태에서 터미널 2개
+# 기본 로컬 모드: Ollama에 qwen3:8b가 설치·실행된 상태에서 터미널 2개
 q-agent-realtime-server --host 127.0.0.1 --port 8765
 npm run dev:web
 ```
@@ -39,6 +39,21 @@ npm run dev:web
 텍스트 테스트는 web BFF를 거쳐 같은 Qwen 생성·평가 파이프라인을 사용합니다.
 Python/GPU/Ollama 세부 설정은
 [`services/realtime/README.md`](services/realtime/README.md)를 참고하세요.
+
+### CPU 서버 + OpenAI API 배포 모드
+
+공개 배포에서는 realtime 서버에 다음 환경변수를 설정하면 같은 프런트와
+WebSocket 계약을 유지한 채 로컬 Whisper/Ollama 대신 API를 사용합니다.
+
+```dotenv
+LLM_PROVIDER=openai
+STT_PROVIDER=openai
+OPENAI_API_KEY=서버_비밀키
+OPENAI_LLM_MODEL=gpt-4o-mini
+OPENAI_STT_MODEL=gpt-4o-mini-transcribe
+```
+
+API 키는 realtime 백엔드에만 저장하고 프런트 환경변수에는 넣지 않습니다.
 
 ### 레거시 extract/engine 확인
 
@@ -65,7 +80,7 @@ docker compose up --build
 | 모듈 | 권장 호스트 | 환경변수 |
 | --- | --- | --- |
 | web | Next.js 호스트 (`apps/web`) | `REALTIME_SERVICE_URL`, `NEXT_PUBLIC_REALTIME_WS_URL` |
-| realtime | GPU 호스트 / 로컬 PC | `REALTIME_PORT`, `CORS_ORIGIN`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL` |
+| realtime | CPU API 호스트 또는 GPU/로컬 PC | `LLM_PROVIDER`, `STT_PROVIDER`, `OPENAI_API_KEY` 또는 `OLLAMA_*` |
 | extract / engine | 레거시 데모 | `EXTRACT_SERVICE_URL`, `ENGINE_SERVICE_URL` |
 
 **비밀키는 커밋하지 마세요.** `.env`는 gitignore 대상입니다.

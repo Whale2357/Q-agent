@@ -5,7 +5,6 @@ import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import numpy as np
@@ -20,7 +19,9 @@ from .config import RuntimeConfig
 from .context import ContextUpdater
 from .database import Repository
 from .domain import QuestionCandidate, QuestionContextState, QuestionStatus, TranscriptSegment
-from .ollama import OllamaClient, OllamaError
+from .ollama import OllamaClient
+from .openai_provider import OpenAILLMClient, OpenAITranscriber
+from .providers import ProviderError, SpeechTranscriber, StructuredLLMClient
 from .questions import QuestionEvaluator, QuestionGenerator, select_top_questions
 from .transcriber import FasterWhisperTranscriber
 
@@ -34,36 +35,67 @@ class TextMeetingRequest(BaseModel):
 
 
 class RealtimeRuntime:
-    def __init__(self) -> None:
-        self.config = RuntimeConfig(
-            database_path=Path(os.getenv("REALTIME_DB_PATH", "data/q-agent.db")),
-            ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
-            ollama_model=os.getenv("OLLAMA_MODEL", "qwen3:8b"),
-        )
+    def __init__(self, config: RuntimeConfig | None = None) -> None:
+        self.config = config or RuntimeConfig.from_env()
+        self.llm = self._create_llm()
         self.repository = Repository(self.config.database_path)
-        self.ollama = OllamaClient(
-            base_url=self.config.ollama_base_url,
-            model=self.config.ollama_model,
-            num_ctx=self.config.context_window_tokens,
-        )
-        self.transcriber: FasterWhisperTranscriber | None = None
-        self._ollama_ready = False
+        self.transcriber: SpeechTranscriber | None = None
+        self._llm_ready = False
+        self._stt_ready = False
         self._ready_lock = asyncio.Lock()
         self._transcription_lock = asyncio.Lock()
 
+    def _create_llm(self) -> StructuredLLMClient:
+        if self.config.llm_provider == "ollama":
+            return OllamaClient(
+                base_url=self.config.ollama_base_url,
+                model=self.config.ollama_model,
+                num_ctx=self.config.context_window_tokens,
+            )
+        if self.config.llm_provider == "openai":
+            return OpenAILLMClient(
+                api_key=self.config.openai_api_key,
+                base_url=self.config.openai_base_url,
+                model=self.config.openai_llm_model,
+            )
+        raise ValueError(
+            f"지원하지 않는 LLM_PROVIDER입니다: {self.config.llm_provider}"
+        )
+
+    async def _create_transcriber(self) -> SpeechTranscriber:
+        if self.config.stt_provider == "local":
+            return await asyncio.to_thread(
+                FasterWhisperTranscriber,
+                language=self.config.language,
+            )
+        if self.config.stt_provider == "openai":
+            return OpenAITranscriber(
+                api_key=self.config.openai_api_key,
+                base_url=self.config.openai_base_url,
+                model=self.config.openai_stt_model,
+                language=self.config.language,
+                sample_rate=self.config.sample_rate,
+            )
+        raise ValueError(
+            f"지원하지 않는 STT_PROVIDER입니다: {self.config.stt_provider}"
+        )
+
     async def ensure_ready(self, *, audio: bool) -> None:
         async with self._ready_lock:
-            if not self._ollama_ready:
-                await self.ollama.ensure_ready()
-                self._ollama_ready = True
+            if not self._llm_ready:
+                await self.llm.ensure_ready()
+                self._llm_ready = True
             if audio and self.transcriber is None:
-                self.transcriber = await asyncio.to_thread(
-                    FasterWhisperTranscriber,
-                    language=self.config.language,
-                )
+                self.transcriber = await self._create_transcriber()
+            if audio and not self._stt_ready:
+                assert self.transcriber is not None
+                await self.transcriber.ensure_ready()
+                self._stt_ready = True
 
     async def close(self) -> None:
-        await self.ollama.close()
+        if self.transcriber is not None:
+            await self.transcriber.close()
+        await self.llm.close()
         self.repository.close()
 
 
@@ -76,9 +108,9 @@ class RealtimeMeetingSession:
         self.audio = audio
         self.meeting_id = self.repository.create_meeting()
         self.state = QuestionContextState(meeting_id=self.meeting_id)
-        self.context_updater = ContextUpdater(runtime.ollama)
-        self.question_generator = QuestionGenerator(runtime.ollama)
-        self.question_evaluator = QuestionEvaluator(runtime.ollama)
+        self.context_updater = ContextUpdater(runtime.llm)
+        self.question_generator = QuestionGenerator(runtime.llm)
+        self.question_evaluator = QuestionEvaluator(runtime.llm)
         self.detector = (
             UtteranceDetector(
                 sample_rate=self.config.sample_rate,
@@ -95,7 +127,9 @@ class RealtimeMeetingSession:
         self._utterance_queue: asyncio.Queue[AudioUtterance] = asyncio.Queue()
         self._analysis_queue: asyncio.Queue[None] = asyncio.Queue(maxsize=1)
         self._transcription_worker = (
-            asyncio.create_task(self._transcription_loop(), name=f"transcribe:{self.meeting_id}")
+            asyncio.create_task(
+                self._transcription_loop(), name=f"transcribe:{self.meeting_id}"
+            )
             if audio
             else None
         )
@@ -128,7 +162,10 @@ class RealtimeMeetingSession:
     async def flush_audio(self) -> None:
         if not self.audio or self.detector is None:
             return
-        for _ in range(max(4, int(1.5 * self.config.sample_rate / self.config.audio_block_size))):
+        flush_frames = max(
+            4, int(1.5 * self.config.sample_rate / self.config.audio_block_size)
+        )
+        for _ in range(flush_frames):
             utterance = self.detector.push(
                 np.zeros(self.config.audio_block_size, dtype=np.float32)
             )
@@ -143,7 +180,11 @@ class RealtimeMeetingSession:
         await self._analysis_queue.join()
 
     async def add_text(self, text: str) -> dict[str, Any]:
-        lines = [line.strip() for line in text.replace("\r\n", "\n").split("\n") if line.strip()]
+        lines = [
+            line.strip()
+            for line in text.replace("\r\n", "\n").split("\n")
+            if line.strip()
+        ]
         cursor_ms = 0
         for line in lines:
             self.repository.add_segment(
@@ -164,10 +205,10 @@ class RealtimeMeetingSession:
         end_ms: int,
     ) -> None:
         if self.runtime.transcriber is None:
-            raise RuntimeError("Whisper 모델이 준비되지 않았습니다.")
+            raise RuntimeError("STT 제공자가 준비되지 않았습니다.")
         await self.send_event({"type": "status", "status": "extracting"})
         async with self.runtime._transcription_lock:
-            result = await asyncio.to_thread(self.runtime.transcriber.transcribe, samples)
+            result = await self.runtime.transcriber.transcribe(samples)
         if not result.text:
             return
         segment = self.repository.add_segment(
@@ -363,18 +404,45 @@ app.add_middleware(
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    ollama_error: str | None = None
+    provider_error: str | None = None
     try:
-        await asyncio.wait_for(runtime.ollama.ensure_ready(), timeout=3)
-        runtime._ollama_ready = True
-    except (OllamaError, TimeoutError) as error:
-        ollama_error = str(error) or "Ollama 상태 확인 시간이 초과되었습니다."
+        await asyncio.wait_for(
+            runtime.ensure_ready(audio=runtime.config.stt_provider == "openai"),
+            timeout=5,
+        )
+    except (ProviderError, TimeoutError) as error:
+        provider_error = str(error) or "AI 제공자 상태 확인 시간이 초과되었습니다."
+    llm_error = provider_error if not runtime._llm_ready else None
+    stt_error = (
+        provider_error
+        if runtime.config.stt_provider == "openai" and not runtime._stt_ready
+        else None
+    )
     return {
-        "ok": ollama_error is None,
+        "ok": provider_error is None,
         "service": "realtime",
-        "model": runtime.config.ollama_model,
-        "ollama_ready": ollama_error is None,
-        "ollama_error": ollama_error,
+        "provider": runtime.llm.provider,
+        "model": runtime.llm.model,
+        "llm_ready": runtime._llm_ready,
+        "llm_error": llm_error,
+        "stt_provider": runtime.config.stt_provider,
+        "stt_model": (
+            runtime.transcriber.model
+            if runtime.transcriber is not None
+            else (
+                runtime.config.openai_stt_model
+                if runtime.config.stt_provider == "openai"
+                else os.getenv("WHISPER_MODEL", "turbo")
+            )
+        ),
+        "stt_loaded": runtime.transcriber is not None,
+        "stt_ready": runtime._stt_ready,
+        "stt_error": stt_error,
+        # Backward-compatible diagnostics for existing local tooling.
+        "ollama_ready": (
+            runtime._llm_ready if runtime.llm.provider == "ollama" else None
+        ),
+        "ollama_error": llm_error if runtime.llm.provider == "ollama" else None,
         "whisper_loaded": runtime.transcriber is not None,
         "whisper_device": getattr(runtime.transcriber, "device", None),
     }
@@ -397,7 +465,7 @@ async def analyze_text(request: TextMeetingRequest) -> dict[str, Any] | JSONResp
         )
     try:
         await runtime.ensure_ready(audio=False)
-    except OllamaError as error:
+    except ProviderError as error:
         return JSONResponse(
             status_code=503,
             content={
@@ -415,13 +483,26 @@ async def analyze_text(request: TextMeetingRequest) -> dict[str, Any] | JSONResp
 
     session = RealtimeMeetingSession(runtime, ignore_event, audio=False)
     try:
-        diagnosis = await session.add_text(text)
-        return {
-            "ok": True,
-            "meeting_id": session.meeting_id,
-            "transcript": session.transcript_text(),
-            "diagnosis": diagnosis,
-        }
+        try:
+            diagnosis = await session.add_text(text)
+            return {
+                "ok": True,
+                "meeting_id": session.meeting_id,
+                "transcript": session.transcript_text(),
+                "diagnosis": diagnosis,
+            }
+        except ProviderError as error:
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "ok": False,
+                    "error": {
+                        "code": "MODEL_REQUEST_FAILED",
+                        "message": str(error),
+                        "retryable": True,
+                    },
+                },
+            )
     finally:
         await session.close()
 
@@ -490,7 +571,7 @@ async def realtime_socket(websocket: WebSocket) -> None:
                 return
     except WebSocketDisconnect:
         pass
-    except (OllamaError, ValueError, RuntimeError, json.JSONDecodeError) as error:
+    except (ProviderError, ValueError, RuntimeError, json.JSONDecodeError) as error:
         try:
             await send_event({"type": "error", "message": str(error)})
         except Exception:

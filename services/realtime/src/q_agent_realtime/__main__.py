@@ -7,8 +7,9 @@ from pathlib import Path
 from .audio import input_devices
 from .config import RuntimeConfig
 from .database import Repository
-from .ollama import OllamaClient, OllamaError
+from .ollama import OllamaClient
 from .pipeline import MeetingPipeline
+from .providers import ProviderError
 from .transcriber import FasterWhisperTranscriber
 
 
@@ -44,17 +45,17 @@ async def run(args: argparse.Namespace) -> None:
     print("[startup] Whisper turbo 모델을 GPU에 로드합니다...")
     transcriber = FasterWhisperTranscriber(language=config.language)
     repository = Repository(config.database_path)
-    ollama = OllamaClient(
+    llm = OllamaClient(
         base_url=config.ollama_base_url,
         model=config.ollama_model,
         num_ctx=config.context_window_tokens,
     )
-    pipeline = MeetingPipeline(config, repository, ollama, transcriber)
+    pipeline = MeetingPipeline(config, repository, llm, transcriber)
     try:
         await pipeline.run()
-    except OllamaError as error:
+    except ProviderError as error:
         repository.close()
-        await ollama.close()
+        await llm.close()
         raise SystemExit(str(error)) from error
 
 

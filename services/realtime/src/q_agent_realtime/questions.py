@@ -15,7 +15,7 @@ from .domain import (
 )
 
 if TYPE_CHECKING:
-    from .ollama import OllamaClient
+    from .providers import StructuredLLMClient
 
 
 GENERATOR_SCHEMA: dict[str, Any] = {
@@ -120,7 +120,7 @@ alignment: Constructive Controversy와 Psychological Safety로 관점 차이를 
 
 
 class QuestionGenerator:
-    def __init__(self, client: OllamaClient):
+    def __init__(self, client: StructuredLLMClient):
         self.client = client
 
     async def generate(self, state: QuestionContextState) -> list[QuestionCandidate]:
@@ -185,7 +185,7 @@ JSON 스키마에 맞는 객체만 반환한다."""
 
 
 class QuestionEvaluator:
-    def __init__(self, client: OllamaClient):
+    def __init__(self, client: StructuredLLMClient):
         self.client = client
 
     async def evaluate(

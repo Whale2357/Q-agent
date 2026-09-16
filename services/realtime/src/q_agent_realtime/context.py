@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 from .domain import DISCUSSION_KEYS, QuestionContextState, TranscriptSegment, utc_now
 
 if TYPE_CHECKING:
-    from .ollama import OllamaClient
+    from .providers import StructuredLLMClient
 
 
 PURPOSES = (
@@ -70,7 +70,7 @@ CONTEXT_SCHEMA: dict[str, Any] = {
 
 
 class ContextUpdater:
-    def __init__(self, client: OllamaClient):
+    def __init__(self, client: StructuredLLMClient):
         self.client = client
 
     async def update(

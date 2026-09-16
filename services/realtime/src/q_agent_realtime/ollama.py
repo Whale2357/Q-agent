@@ -6,12 +6,16 @@ from typing import Any
 
 import httpx
 
+from .providers import ProviderError
 
-class OllamaError(RuntimeError):
+
+class OllamaError(ProviderError):
     pass
 
 
 class OllamaClient:
+    provider = "ollama"
+
     def __init__(
         self,
         base_url: str,

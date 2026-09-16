@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass
 
@@ -14,6 +15,8 @@ class TranscriptionResult:
 
 
 class FasterWhisperTranscriber:
+    provider = "local"
+
     def __init__(
         self,
         model_name: str | None = None,
@@ -34,15 +37,23 @@ class FasterWhisperTranscriber:
             "int8_float16" if selected_device == "cuda" else "int8",
         )
         self.language = language
+        self.model_name = model_name or os.getenv("WHISPER_MODEL", "turbo")
+        self.model = self.model_name
         self.device = selected_device
-        self.model = WhisperModel(
-            model_name or os.getenv("WHISPER_MODEL", "turbo"),
+        self._whisper = WhisperModel(
+            self.model_name,
             device=selected_device,
             compute_type=selected_compute_type,
         )
 
-    def transcribe(self, samples: np.ndarray) -> TranscriptionResult:
-        segments, info = self.model.transcribe(
+    async def ensure_ready(self) -> None:
+        return None
+
+    async def transcribe(self, samples: np.ndarray) -> TranscriptionResult:
+        return await asyncio.to_thread(self._transcribe_sync, samples)
+
+    def _transcribe_sync(self, samples: np.ndarray) -> TranscriptionResult:
+        segments, info = self._whisper.transcribe(
             samples,
             language=self.language,
             beam_size=1,
@@ -55,3 +66,6 @@ class FasterWhisperTranscriber:
             language=info.language,
             language_probability=float(info.language_probability),
         )
+
+    async def close(self) -> None:
+        return None

@@ -10,9 +10,8 @@ from .config import RuntimeConfig
 from .context import ContextUpdater
 from .database import Repository
 from .domain import QuestionContextState, QuestionStatus, TranscriptSegment
-from .ollama import OllamaClient, OllamaError
+from .providers import ProviderError, SpeechTranscriber, StructuredLLMClient
 from .questions import QuestionEvaluator, QuestionGenerator, select_top_questions
-from .transcriber import FasterWhisperTranscriber
 
 
 class MeetingPipeline:
@@ -20,16 +19,16 @@ class MeetingPipeline:
         self,
         config: RuntimeConfig,
         repository: Repository,
-        ollama: OllamaClient,
-        transcriber: FasterWhisperTranscriber,
+        llm: StructuredLLMClient,
+        transcriber: SpeechTranscriber,
     ):
         self.config = config
         self.repository = repository
-        self.ollama = ollama
+        self.llm = llm
         self.transcriber = transcriber
-        self.context_updater = ContextUpdater(ollama)
-        self.question_generator = QuestionGenerator(ollama)
-        self.question_evaluator = QuestionEvaluator(ollama)
+        self.context_updater = ContextUpdater(llm)
+        self.question_generator = QuestionGenerator(llm)
+        self.question_evaluator = QuestionEvaluator(llm)
         self.stop_event = asyncio.Event()
         self.state_lock = asyncio.Lock()
         self.meeting_id = ""
@@ -39,7 +38,8 @@ class MeetingPipeline:
         self.last_generated_context_version = 0
 
     async def run(self) -> None:
-        await self.ollama.ensure_ready()
+        await self.llm.ensure_ready()
+        await self.transcriber.ensure_ready()
         self.meeting_id = self.repository.create_meeting(self.config.meeting_objective)
         self.state = QuestionContextState(
             meeting_id=self.meeting_id,
@@ -65,7 +65,8 @@ class MeetingPipeline:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             self.repository.end_meeting(self.meeting_id)
-            await self.ollama.close()
+            await self.transcriber.close()
+            await self.llm.close()
             self.repository.close()
             print("[meeting] 종료 및 저장 완료")
 
@@ -98,7 +99,7 @@ class MeetingPipeline:
             if utterance is None:
                 continue
             try:
-                result = await asyncio.to_thread(self.transcriber.transcribe, utterance.samples)
+                result = await self.transcriber.transcribe(utterance.samples)
             except Exception as error:
                 print(f"[asr:error] {error}")
                 continue
@@ -145,7 +146,7 @@ class MeetingPipeline:
                     f"{updated_state.current_purpose.get('primary', 'unknown')} / "
                     f"{updated_state.current_topic}"
                 )
-            except OllamaError as error:
+            except ProviderError as error:
                 print(f"[context:error] {error}")
 
     async def _question_loop(self) -> None:
@@ -173,7 +174,7 @@ class MeetingPipeline:
                 self.last_generated_context_version = state_snapshot.version
                 eligible = sum(q.status is QuestionStatus.ELIGIBLE for q in evaluated)
                 print(f"[questions] 후보 {len(evaluated)}개 / 활성 {eligible}개")
-            except OllamaError as error:
+            except ProviderError as error:
                 print(f"[questions:error] {error}")
 
     async def _reevaluation_loop(self) -> None:
@@ -193,7 +194,7 @@ class MeetingPipeline:
                     continue
                 self.repository.save_questions(evaluated)
                 print(f"[questions] 활성 질문 {len(evaluated)}개 재평가")
-            except OllamaError as error:
+            except ProviderError as error:
                 print(f"[reevaluation:error] {error}")
 
     async def _silence_loop(self) -> None:
