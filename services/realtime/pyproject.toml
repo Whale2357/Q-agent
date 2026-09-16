@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "q-agent-realtime"
+version = "0.1.0"
+description = "Local real-time meeting context and question pipeline for Q-Agent"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "faster-whisper>=1.2,<2",
+  "httpx>=0.28,<1",
+  "numpy>=2,<3",
+  "silero-vad>=6.2,<7",
+  "sounddevice>=0.5,<1",
+  "soundfile>=0.14,<1",
+]
+
+[project.scripts]
+q-agent-realtime = "q_agent_realtime.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.unittest]
+start-directory = "tests"
