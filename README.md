@@ -8,6 +8,7 @@
 apps/web              Next.js 프론트 + BFF (/api/*)
 services/extract      음성/텍스트 → Transcript
 services/engine       질문 생성 + 선발
+services/realtime     로컬 마이크 → Whisper → 맥락 상태 → 질문 후보/검증
 packages/contracts    공유 TypeScript 계약
 fixtures/             샘플 회의록
 scripts/smoke-test.mjs 모듈 통신 검증
@@ -15,7 +16,8 @@ scripts/smoke-test.mjs 모듈 통신 검증
 
 협업 규칙: [`docs/KICKOFF.md`](docs/KICKOFF.md)  
 최종 기획: [`docs/최종_기획안.md`](docs/최종_기획안.md)  
-인프라·통신 검증: [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md)
+인프라·통신 검증: [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md)  
+MVP2 범위·브랜치 운영 (`develop_2`): [`docs/MVP2.md`](docs/MVP2.md)
 
 ## 로컬 실행 (권장)
 
@@ -36,6 +38,12 @@ npm run dev:web
 ```bash
 npm run smoke
 ```
+
+### 로컬 실시간 Python 파이프라인
+
+`services/realtime`은 LangGraph 없이 Python으로 실행되는 연구용 실시간
+파이프라인입니다. 설치 및 GPU/Ollama 실행 방법은
+[`services/realtime/README.md`](services/realtime/README.md)를 참고하세요.
 
 ## Docker Compose
 
