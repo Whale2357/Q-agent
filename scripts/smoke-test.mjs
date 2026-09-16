@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Smoke test: extract ↔ engine ↔ (optional) web BFF
+ * Legacy smoke test: extract ↔ engine ↔ (optional) old web routes
  * Usage:
  *   node scripts/smoke-test.mjs
  *   WEB_URL=http://localhost:3000 node scripts/smoke-test.mjs
@@ -62,14 +62,20 @@ async function main() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         transcript,
-        preset: "decision",
-        tone: 2,
         options: { max_questions: 3 },
       }),
     });
     assert(res.ok && json.ok, `diagnose failed: ${JSON.stringify(json)}`);
     assert(json.status === "done" || json.status === "rejected", "bad status");
     assert(Array.isArray(json.questions), "questions missing");
+    assert(
+      json.questions.every((question) => !question.text.includes("인가요일까요")),
+      "question contains a duplicated Korean ending"
+    );
+    assert(
+      json.questions.some((question) => question.text.includes("잘 모르겠어")),
+      "questions are not grounded in the latest transcript"
+    );
     report.push(
       `OK engine /v1/diagnose (status=${json.status}, n=${json.questions.length})`
     );
@@ -79,7 +85,7 @@ async function main() {
   try {
     const h = await getJson(`${WEB_URL}/api/health`);
     if (h.res.ok && h.json.ok) {
-      report.push("OK web /api/health (BFF → both upstreams)");
+      report.push("OK web /api/health");
 
       const ex = await getJson(`${WEB_URL}/api/extract`, {
         method: "POST",
@@ -93,8 +99,6 @@ async function main() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           transcript: ex.json.transcript,
-          preset: "decision",
-          tone: 2,
         }),
       });
       assert(dg.json.ok, `web diagnose proxy failed: ${JSON.stringify(dg.json)}`);

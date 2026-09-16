@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .domain import DISCUSSION_KEYS, QuestionContextState, TranscriptSegment, utc_now
-from .ollama import OllamaClient
+
+if TYPE_CHECKING:
+    from .ollama import OllamaClient
 
 
 PURPOSES = (

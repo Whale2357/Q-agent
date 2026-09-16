@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .context import PURPOSES
 from .domain import (
@@ -13,7 +13,9 @@ from .domain import (
     QuestionStatus,
     utc_now,
 )
-from .ollama import OllamaClient
+
+if TYPE_CHECKING:
+    from .ollama import OllamaClient
 
 
 GENERATOR_SCHEMA: dict[str, Any] = {

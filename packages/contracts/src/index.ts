@@ -75,8 +75,9 @@ export interface DiagnoseOptions {
 
 export interface DiagnoseRequest {
   transcript: Transcript;
-  preset: MeetingPreset;
-  tone: ToneLevel;
+  /** Optional legacy hints. The engine infers purpose and uses its default tone when omitted. */
+  preset?: MeetingPreset;
+  tone?: ToneLevel;
   options?: DiagnoseOptions;
 }
 

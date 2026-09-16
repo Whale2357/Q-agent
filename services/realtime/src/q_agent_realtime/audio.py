@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from typing import AsyncIterator
 
 import numpy as np
-import sounddevice as sd
-from silero_vad import VADIterator, load_silero_vad
 
 
 @dataclass(slots=True)
@@ -30,6 +28,8 @@ class MicrophoneStream:
         self.dropped_frames = 0
 
     async def frames(self) -> AsyncIterator[np.ndarray]:
+        import sounddevice as sd
+
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[np.ndarray] = asyncio.Queue(maxsize=256)
 
@@ -66,6 +66,8 @@ class UtteranceDetector:
         speech_pad_ms: int = 200,
         max_utterance_seconds: float = 30.0,
     ):
+        from silero_vad import VADIterator, load_silero_vad
+
         self.sample_rate = sample_rate
         self.vad = VADIterator(
             load_silero_vad(onnx=True),
@@ -117,6 +119,8 @@ class UtteranceDetector:
 
 
 def input_devices() -> list[tuple[int, str, int]]:
+    import sounddevice as sd
+
     devices: list[tuple[int, str, int]] = []
     for index, device in enumerate(sd.query_devices()):
         channels = int(device["max_input_channels"])

@@ -22,21 +22,17 @@ app.get("/health", (_req, res) => {
 app.post("/v1/diagnose", (req, res) => {
   try {
     const body = req.body as DiagnoseRequest;
-    if (!body?.transcript?.text || !body.preset || !body.tone) {
+    if (!body?.transcript?.text) {
       return res.status(400).json(
-        fail(
-          "INVALID_INPUT",
-          "transcript.text, preset, tone 필드가 필요합니다.",
-          false
-        )
+        fail("INVALID_INPUT", "transcript.text 필드가 필요합니다.", false)
       );
     }
-    if (body.preset !== "decision" && body.preset !== "problem") {
+    if (body.preset && body.preset !== "decision" && body.preset !== "problem") {
       return res
         .status(400)
         .json(fail("INVALID_INPUT", "preset은 decision|problem 이어야 합니다."));
     }
-    if (![1, 2, 3, 4].includes(Number(body.tone))) {
+    if (body.tone !== undefined && ![1, 2, 3, 4].includes(Number(body.tone))) {
       return res
         .status(400)
         .json(fail("INVALID_INPUT", "tone은 1~4 이어야 합니다."));

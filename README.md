@@ -19,31 +19,37 @@ scripts/smoke-test.mjs 모듈 통신 검증
 인프라·통신 검증: [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md)  
 MVP2 범위·브랜치 운영 (`develop_2`): [`docs/MVP2.md`](docs/MVP2.md)
 
-## 로컬 실행 (권장)
+## 로컬 실행 (웹 + realtime)
 
-```bash
-cp .env.example .env
+```powershell
 npm install
+cd services/realtime
+python -m pip install -e .
+cd ../..
 
-# 터미널 3개
-npm run dev:extract
-npm run dev:engine
+# Ollama에 qwen3:8b가 설치·실행된 상태에서 터미널 2개
+q-agent-realtime-server --host 127.0.0.1 --port 8765
 npm run dev:web
 ```
 
 - Web: http://localhost:3000  
-- Extract: http://localhost:4001/health  
-- Engine: http://localhost:4002/health  
+- Realtime API: http://localhost:8765/health
+
+웹의 녹음 모드는 브라우저 PCM을 realtime WebSocket으로 직접 전송하며,
+텍스트 테스트는 web BFF를 거쳐 같은 Qwen 생성·평가 파이프라인을 사용합니다.
+Python/GPU/Ollama 세부 설정은
+[`services/realtime/README.md`](services/realtime/README.md)를 참고하세요.
+
+### 레거시 extract/engine 확인
+
+기존 `extract`/`engine`은 데모 및 계약 스모크 테스트용으로 남아 있으며 현재
+웹 화면에서는 호출하지 않습니다.
 
 ```bash
+npm run dev:extract
+npm run dev:engine
 npm run smoke
 ```
-
-### 로컬 실시간 Python 파이프라인
-
-`services/realtime`은 LangGraph 없이 Python으로 실행되는 연구용 실시간
-파이프라인입니다. 설치 및 GPU/Ollama 실행 방법은
-[`services/realtime/README.md`](services/realtime/README.md)를 참고하세요.
 
 ## Docker Compose
 
@@ -51,12 +57,15 @@ npm run smoke
 docker compose up --build
 ```
 
+현재 Compose는 레거시 TypeScript 서비스 묶음이며 realtime GPU 서버는 별도로
+실행해야 합니다.
+
 ## 배포 요약
 
 | 모듈 | 권장 호스트 | 환경변수 |
 | --- | --- | --- |
-| web | Vercel (`apps/web`) | `EXTRACT_SERVICE_URL`, `ENGINE_SERVICE_URL` |
-| extract | Railway / Render / Fly | `PORT`, `CORS_ORIGIN` |
-| engine | Railway / Render / Fly | `PORT`, `CORS_ORIGIN`, (추후 LLM 키) |
+| web | Next.js 호스트 (`apps/web`) | `REALTIME_SERVICE_URL`, `NEXT_PUBLIC_REALTIME_WS_URL` |
+| realtime | GPU 호스트 / 로컬 PC | `REALTIME_PORT`, `CORS_ORIGIN`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL` |
+| extract / engine | 레거시 데모 | `EXTRACT_SERVICE_URL`, `ENGINE_SERVICE_URL` |
 
 **비밀키는 커밋하지 마세요.** `.env`는 gitignore 대상입니다.
