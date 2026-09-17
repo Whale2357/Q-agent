@@ -11,11 +11,27 @@ import httpx
 from q_agent_realtime.config import RuntimeConfig
 from q_agent_realtime.llm_roles import create_role_llms
 from q_agent_realtime.ollama import OllamaClient, OllamaError
+from q_agent_realtime.openai_provider import OpenAILLMClient
 
 
 class RoleConfigTest(unittest.TestCase):
-    def test_local_defaults_split_models_by_role(self) -> None:
+    def test_defaults_use_openai_api_providers(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
+            config = RuntimeConfig.from_env()
+
+        self.assertEqual(config.llm_provider, "openai")
+        self.assertEqual(config.stt_provider, "openai")
+        self.assertEqual(config.openai_context_model, "gpt-4o-mini")
+        self.assertEqual(config.openai_generator_model, "gpt-4o-mini")
+        self.assertEqual(config.openai_evaluator_model, "gpt-4o-mini")
+        self.assertEqual(config.openai_stt_model, "gpt-4o-mini-transcribe")
+
+    def test_local_models_remain_available_when_selected(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"LLM_PROVIDER": "ollama", "STT_PROVIDER": "local"},
+            clear=True,
+        ):
             config = RuntimeConfig.from_env()
 
         self.assertEqual(config.ollama_context_model, "qwen3:4b")
@@ -34,7 +50,7 @@ class RoleConfigTest(unittest.TestCase):
         self.assertEqual(config.ollama_evaluator_model, "qwen3:1.7b")
 
     def test_factory_creates_independent_role_clients(self) -> None:
-        llms = create_role_llms(RuntimeConfig())
+        llms = create_role_llms(RuntimeConfig(llm_provider="ollama"))
         try:
             self.assertEqual(
                 llms.models(),
@@ -47,6 +63,23 @@ class RoleConfigTest(unittest.TestCase):
             self.assertIsNot(llms.context, llms.evaluator)
             self.assertEqual(llms.context.num_ctx, 4096)
             self.assertEqual(llms.generator.num_ctx, 8192)
+        finally:
+            asyncio.run(llms.close())
+
+    def test_default_factory_creates_openai_clients(self) -> None:
+        llms = create_role_llms(RuntimeConfig(openai_api_key="test-key"))
+        try:
+            self.assertTrue(
+                all(isinstance(client, OpenAILLMClient) for _, client in llms.items())
+            )
+            self.assertEqual(
+                llms.models(),
+                {
+                    "context": "gpt-4o-mini",
+                    "generator": "gpt-4o-mini",
+                    "evaluator": "gpt-4o-mini",
+                },
+            )
         finally:
             asyncio.run(llms.close())
 

@@ -98,16 +98,16 @@ WebSocket 메시지 순서는 `start` → PCM binary frames → `stop`입니다.
 
 ## 모델 제공자 설정
 
-환경변수를 지정하지 않으면 기존 로컬 모드인 Ollama와 faster-whisper를
-사용합니다.
+환경변수를 지정하지 않으면 OpenAI Responses API와 Audio Transcriptions API를
+사용합니다. 따라서 realtime 서버에 `OPENAI_API_KEY`가 필요합니다.
 
 | 모드 | `LLM_PROVIDER` | `STT_PROVIDER` | 필요한 설정 |
 | --- | --- | --- | --- |
+| API 기본값 | `openai` | `openai` | `OPENAI_API_KEY` |
 | 완전 로컬 | `ollama` | `local` | Ollama + 로컬 Whisper |
-| 공개 API 배포 | `openai` | `openai` | `OPENAI_API_KEY` |
 | 혼합 | `ollama` 또는 `openai` | `local` 또는 `openai` | 선택한 제공자 설정 |
 
-CPU 서버 공개 배포 설정은 다음과 같습니다.
+API 모드 설정은 다음과 같습니다.
 
 ```dotenv
 LLM_PROVIDER=openai
@@ -128,7 +128,7 @@ Transcriptions API를 호출하며, 응답 저장은 `store: false`로 요청합
 OpenAI 모드에서는 실제 녹음을 시작하기 전에 API 키와 각 모델 접근 권한을
 확인합니다.
 
-## 로컬 모델 설정
+## 선택 사항: 로컬 모델 설정
 
 로컬 모드는 역할별 클라이언트, 실행 주기, 모델을 모두 분리합니다. 맥락 보존은
 `qwen3:4b`, 복잡하고 다양한 후보 생성은 `qwen3:8b`, 정해진 스키마에 따른

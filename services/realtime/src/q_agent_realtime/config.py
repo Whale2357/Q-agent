@@ -32,8 +32,8 @@ class RuntimeConfig:
     evaluator_model_window_tokens: int = 4096
     meeting_objective: str = ""
     microphone_device: int | str | None = None
-    llm_provider: str = "ollama"
-    stt_provider: str = "local"
+    llm_provider: str = "openai"
+    stt_provider: str = "openai"
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     openai_llm_model: str = "gpt-4o-mini"
@@ -56,8 +56,8 @@ class RuntimeConfig:
             ),
             ollama_evaluator_model=os.getenv("OLLAMA_EVALUATOR_MODEL", "qwen3:1.7b"),
             language=os.getenv("REALTIME_LANGUAGE", "ko"),
-            llm_provider=os.getenv("LLM_PROVIDER", "ollama").strip().lower(),
-            stt_provider=os.getenv("STT_PROVIDER", "local").strip().lower(),
+            llm_provider=os.getenv("LLM_PROVIDER", "openai").strip().lower(),
+            stt_provider=os.getenv("STT_PROVIDER", "openai").strip().lower(),
             openai_api_key=os.getenv("OPENAI_API_KEY", ""),
             openai_base_url=os.getenv(
                 "OPENAI_BASE_URL", "https://api.openai.com/v1"

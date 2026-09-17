@@ -38,6 +38,8 @@ def build_parser() -> argparse.ArgumentParser:
 async def run(args: argparse.Namespace) -> None:
     config = RuntimeConfig(
         database_path=Path(args.db),
+        llm_provider="ollama",
+        stt_provider="local",
         ollama_base_url=args.ollama_url,
         ollama_context_model=args.context_model,
         ollama_generator_model=args.generator_model,

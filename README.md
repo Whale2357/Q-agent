@@ -21,16 +21,26 @@ MVP2 범위·브랜치 운영 (`develop_2`): [`docs/MVP2.md`](docs/MVP2.md)
 
 ## 로컬 실행 (웹 + realtime)
 
+처음 한 번만 `services/realtime/.env.example`을 `services/realtime/.env`로
+복사하고 `OPENAI_API_KEY=` 뒤에 발급받은 키를 입력합니다. 이 파일은 Git에
+포함되지 않습니다.
+
+```powershell
+Copy-Item services/realtime/.env.example services/realtime/.env
+notepad services/realtime/.env
+```
+
+이후 Windows에서는 [`apps/web/start-local.cmd`](apps/web/start-local.cmd)를
+더블클릭하면 realtime API와 웹이 함께 실행됩니다. Python 가상환경과 패키지가
+없으면 첫 실행 때 자동으로 준비합니다.
+
+수동으로 실행하려면 다음 명령을 사용합니다.
+
 ```powershell
 npm install
 cd services/realtime
 python -m pip install -e .
 cd ../..
-
-# 기본 로컬 모드: 역할별 Qwen 모델 3개 설치
-ollama pull qwen3:1.7b
-ollama pull qwen3:4b
-ollama pull qwen3:8b
 
 # 터미널 2개에서 realtime과 web 실행
 q-agent-realtime-server --host 127.0.0.1 --port 8765
@@ -41,22 +51,22 @@ npm run dev:web
 - Realtime API: http://localhost:8765/health
 
 웹의 녹음 모드는 브라우저 PCM을 realtime WebSocket으로 직접 전송하며,
-텍스트 테스트는 web BFF를 거쳐 같은 Qwen 생성·평가 파이프라인을 사용합니다.
-Python/GPU/Ollama 세부 설정은
+텍스트 테스트는 web BFF를 거쳐 같은 OpenAI 생성·평가 파이프라인을 사용합니다.
+제공자와 로컬 대체 실행에 관한 세부 설정은
 [`services/realtime/README.md`](services/realtime/README.md)를 참고하세요.
 
 실행 자원은 다음처럼 나뉩니다.
 
-- CPU/RAM: 브라우저·Next.js·FastAPI·WebSocket·VAD·오디오 버퍼·SQLite·주기 제어
-- GPU/VRAM: faster-whisper 전사 추론, Ollama의 Qwen3 4B/8B 추론
+- 로컬 CPU/RAM: 브라우저·Next.js·FastAPI·WebSocket·VAD·오디오 버퍼·SQLite·주기 제어
+- 외부 API: OpenAI Audio Transcriptions 전사, Responses API의 맥락·생성·평가 호출
 
-즉 브라우저가 마이크를 캡처하고 서버 CPU가 오디오를 정리하며, 실제 Whisper와
-Qwen 신경망 계산만 GPU로 전달합니다.
+즉 브라우저가 마이크를 캡처하고 realtime 서버가 오디오를 정리한 뒤, API 키를
+노출하지 않고 OpenAI API를 서버 사이드에서 호출합니다.
 
-### CPU 서버 + OpenAI API 배포 모드
+### OpenAI API 기본 모드
 
-공개 배포에서는 realtime 서버에 다음 환경변수를 설정하면 같은 프런트와
-WebSocket 계약을 유지한 채 로컬 Whisper/Ollama 대신 API를 사용합니다.
+realtime 서버는 기본적으로 OpenAI API를 사용합니다. 다음 환경변수 중
+`OPENAI_API_KEY`는 필수이며, 나머지는 모델을 바꿀 때만 지정하면 됩니다.
 
 ```dotenv
 LLM_PROVIDER=openai
@@ -69,6 +79,19 @@ OPENAI_STT_MODEL=gpt-4o-mini-transcribe
 ```
 
 API 키는 realtime 백엔드에만 저장하고 프런트 환경변수에는 넣지 않습니다.
+
+### 선택 사항: 완전 로컬 모드
+
+API 대신 Ollama와 faster-whisper를 사용하려면 provider를 명시하고 역할별
+Qwen 모델을 설치합니다.
+
+```powershell
+$env:LLM_PROVIDER="ollama"
+$env:STT_PROVIDER="local"
+ollama pull qwen3:1.7b
+ollama pull qwen3:4b
+ollama pull qwen3:8b
+```
 
 ### 레거시 extract/engine 확인
 
