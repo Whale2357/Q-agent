@@ -76,12 +76,17 @@ EVALUATOR_SCHEMA: dict[str, Any] = {
                     "has_transcript_evidence": {"type": "boolean"},
                     "already_resolved": {"type": "boolean"},
                     "socially_safe": {"type": "boolean"},
-                    "information_gain": {"type": "number", "minimum": 0, "maximum": 3},
-                    "non_redundancy": {"type": "number", "minimum": 0, "maximum": 3},
+                    "information_gain": {
+                        "type": "integer",
+                        "enum": [0, 1, 2, 3],
+                    },
+                    "non_redundancy": {
+                        "type": "integer",
+                        "enum": [0, 1, 2, 3],
+                    },
                     "assumption_surfacing": {
-                        "type": "number",
-                        "minimum": 0,
-                        "maximum": 3,
+                        "type": "integer",
+                        "enum": [0, 1, 2, 3],
                     },
                     "reason": {"type": "string"},
                     "stale_reason": {
@@ -202,12 +207,18 @@ class QuestionEvaluator:
 정보 이득은 답이 실제 결정이나 다음 행동을 바꿀 가능성이다.
 비중복성은 기존 논의와 질문 이력에 같은 답이 없는 정도다.
 가정 노출은 검증되지 않은 전제를 드러내는 정도다.
+세 점수는 다른 값이나 이전 평가를 복사하지 말고 최신 맥락에서 새로 판단한다.
+각 점수는 반드시 JSON 정수 0, 1, 2, 3 중 하나여야 한다.
+0점은 해당 가치가 전혀 없을 때만 사용하고, 이유에 점수 근거를 함께 적는다.
 현재 주제가 바뀌었으면 topic_changed, 대화에서 답이 나왔으면 resolved로 표시한다.
+already_resolved가 false이고 현재 주제와 관련 있으면 stale_reason은 none이다.
 JSON 스키마에 맞는 객체만 반환한다. /no_think"""
         user = json.dumps(
             {
                 "question_context_state": state.to_dict(),
-                "questions": [question.to_dict() for question in questions],
+                "questions": [
+                    _evaluation_prompt_question(question) for question in questions
+                ],
             },
             ensure_ascii=False,
         )
@@ -231,6 +242,22 @@ JSON 스키마에 맞는 객체만 반환한다. /no_think"""
                 continue
             apply_evaluation(question, item)
         return questions
+
+
+def _evaluation_prompt_question(question: QuestionCandidate) -> dict[str, Any]:
+    """Exclude default/previous scores so the evaluator cannot anchor on them."""
+    return {
+        "question_id": question.id,
+        "text": question.text,
+        "meeting_purpose": question.meeting_purpose,
+        "detected_problem": question.detected_problem,
+        "question_role": question.question_role,
+        "theory": question.theory,
+        "evidence_segment_ids": question.evidence_segment_ids,
+        "context_version": question.context_version,
+        "category": question.category,
+        "operator": question.operator,
+    }
 
 
 def apply_evaluation(question: QuestionCandidate, evaluation: dict[str, Any]) -> None:

@@ -27,7 +27,12 @@ cd services/realtime
 python -m pip install -e .
 cd ../..
 
-# 기본 로컬 모드: Ollama에 qwen3:8b가 설치·실행된 상태에서 터미널 2개
+# 기본 로컬 모드: 역할별 Qwen 모델 3개 설치
+ollama pull qwen3:1.7b
+ollama pull qwen3:4b
+ollama pull qwen3:8b
+
+# 터미널 2개에서 realtime과 web 실행
 q-agent-realtime-server --host 127.0.0.1 --port 8765
 npm run dev:web
 ```
@@ -40,6 +45,14 @@ npm run dev:web
 Python/GPU/Ollama 세부 설정은
 [`services/realtime/README.md`](services/realtime/README.md)를 참고하세요.
 
+실행 자원은 다음처럼 나뉩니다.
+
+- CPU/RAM: 브라우저·Next.js·FastAPI·WebSocket·VAD·오디오 버퍼·SQLite·주기 제어
+- GPU/VRAM: faster-whisper 전사 추론, Ollama의 Qwen3 4B/8B 추론
+
+즉 브라우저가 마이크를 캡처하고 서버 CPU가 오디오를 정리하며, 실제 Whisper와
+Qwen 신경망 계산만 GPU로 전달합니다.
+
 ### CPU 서버 + OpenAI API 배포 모드
 
 공개 배포에서는 realtime 서버에 다음 환경변수를 설정하면 같은 프런트와
@@ -49,7 +62,9 @@ WebSocket 계약을 유지한 채 로컬 Whisper/Ollama 대신 API를 사용합�
 LLM_PROVIDER=openai
 STT_PROVIDER=openai
 OPENAI_API_KEY=서버_비밀키
-OPENAI_LLM_MODEL=gpt-4o-mini
+OPENAI_CONTEXT_MODEL=gpt-4o-mini
+OPENAI_GENERATOR_MODEL=gpt-4o-mini
+OPENAI_EVALUATOR_MODEL=gpt-4o-mini
 OPENAI_STT_MODEL=gpt-4o-mini-transcribe
 ```
 

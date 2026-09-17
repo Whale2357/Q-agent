@@ -57,12 +57,15 @@ interface RealtimeTextResponse {
 }
 
 interface RealtimeEvent {
-  type: "status" | "ready" | "transcript" | "questions" | "stopped" | "error";
+  type: "status" | "ready" | "transcript" | "context" | "questions" | "stopped" | "error";
   status?: "loading" | PipelineStatus;
+  agent?: "context" | "generator" | "evaluator";
   meeting_id?: string;
   transcript?: string;
   diagnosis?: SuccessfulDiagnosis | null;
   message?: string;
+  version?: number;
+  topic?: string;
 }
 
 type IconName =

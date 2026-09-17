@@ -7,7 +7,7 @@ from pathlib import Path
 from .audio import input_devices
 from .config import RuntimeConfig
 from .database import Repository
-from .ollama import OllamaClient
+from .llm_roles import create_role_llms
 from .pipeline import MeetingPipeline
 from .providers import ProviderError
 from .transcriber import FasterWhisperTranscriber
@@ -24,7 +24,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--list-devices", action="store_true", help="마이크 목록 출력")
     parser.add_argument("--device", help="마이크 장치 번호 또는 이름")
     parser.add_argument("--db", default="data/q-agent.db", help="SQLite DB 경로")
-    parser.add_argument("--model", default="qwen3:8b", help="Ollama 모델")
+    parser.add_argument("--context-model", default="qwen3:4b")
+    parser.add_argument("--generator-model", default="qwen3:8b")
+    parser.add_argument("--evaluator-model", default="qwen3:4b")
     parser.add_argument(
         "--ollama-url", default="http://127.0.0.1:11434", help="Ollama 기본 URL"
     )
@@ -37,7 +39,9 @@ async def run(args: argparse.Namespace) -> None:
     config = RuntimeConfig(
         database_path=Path(args.db),
         ollama_base_url=args.ollama_url,
-        ollama_model=args.model,
+        ollama_context_model=args.context_model,
+        ollama_generator_model=args.generator_model,
+        ollama_evaluator_model=args.evaluator_model,
         meeting_objective=args.meeting_objective,
         microphone_device=parse_device(args.device),
         silence_trigger_seconds=args.silence_seconds,
@@ -45,17 +49,13 @@ async def run(args: argparse.Namespace) -> None:
     print("[startup] Whisper turbo 모델을 GPU에 로드합니다...")
     transcriber = FasterWhisperTranscriber(language=config.language)
     repository = Repository(config.database_path)
-    llm = OllamaClient(
-        base_url=config.ollama_base_url,
-        model=config.ollama_model,
-        num_ctx=config.context_window_tokens,
-    )
-    pipeline = MeetingPipeline(config, repository, llm, transcriber)
+    llms = create_role_llms(config)
+    pipeline = MeetingPipeline(config, repository, llms, transcriber)
     try:
         await pipeline.run()
     except ProviderError as error:
         repository.close()
-        await llm.close()
+        await llms.close()
         raise SystemExit(str(error)) from error
 
 

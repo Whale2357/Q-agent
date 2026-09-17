@@ -11,10 +11,35 @@ from q_agent_realtime.domain import (
     QuestionStatus,
     TranscriptSegment,
 )
-from q_agent_realtime.questions import apply_evaluation, select_top_questions
+from q_agent_realtime.questions import (
+    _evaluation_prompt_question,
+    apply_evaluation,
+    select_top_questions,
+)
 
 
 class EvaluationPolicyTest(unittest.TestCase):
+    def test_evaluator_prompt_excludes_default_scores_and_status(self) -> None:
+        question = QuestionCandidate(
+            id="q_test",
+            meeting_id="mtg_test",
+            text="판단 기준은 무엇인가요?",
+            meeting_purpose="decision_making",
+            detected_problem="판단 기준 부족",
+            question_role="판단 기준 명료화",
+            theory="Inquiry",
+            evidence_segment_ids=[1],
+        )
+
+        payload = _evaluation_prompt_question(question)
+
+        self.assertEqual(payload["question_id"], "q_test")
+        self.assertNotIn("status", payload)
+        self.assertNotIn("information_gain", payload)
+        self.assertNotIn("non_redundancy", payload)
+        self.assertNotIn("assumption_surfacing", payload)
+        self.assertNotIn("final_score", payload)
+
     def test_three_core_scores_create_eligible_question(self) -> None:
         question = QuestionCandidate(
             id="q_test",
