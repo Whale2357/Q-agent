@@ -1,0 +1,189 @@
+Q-Agent 3-way question quality comparison
+A=Naive LLM | B=Eval-aligned LLM | C=Q-Agent pipeline
+model=gpt-4o-mini
+
+========================================================================
+CASE: 01_rushed_decision.txt
+------------------------------------------------------------------------
+[주제: 신규 결제 모듈 도입 / decision_making]
+A: 나는 외부 SaaS로 가는 게 맞다고 봐. 개발비가  proto.
+B: 아니 자체 개발이 더 빨라. 시장이 기다려 주지 않아.
+A: 그래도 예산이 없는데. 올해 한도는 이미 거의 찼어.
+B: 일단 자체 개발로 가자. 다들 동의하지?
+C: …음, 잘 모르겠어. 보안 쪽은 누가 볼지…
+B: 보안은 나중에 보면 되지. 오늘은 방향만 정하자.
+A: 그럼 자체 개발로 확정하자.
+
+### A) Naive LLM
+1. 자체 개발을 선택했을 때 예상되는 위험 요소는 무엇인가요?
+   why: 위험 요소를 미리 파악하면 이후 문제를 예방할 수 있습니다.
+2. 외부 SaaS를 고려하지 않은 이유는 무엇인가요?
+   why: 대안에 대한 이해를 높이고, 다양한 시각을 반영하기 위해서입니다.
+3. 보안 문제에 대한 구체적인 계획은 어떻게 세울 예정인가요?
+   why: 보안은 중요하므로 사전에 명확한 계획이 필요합니다.
+
+### B) Eval-aligned LLM (평가 기준 유사 프롬프트)
+1. [assumption_challenge/blind_spot] 자체 개발이 예산 초과를 감수할 만큼의 가치를 제공할 것이라는 전제가 맞는지 어떻게 검증할 수 있을까요?
+   why: 이 질문은 예산과 가치를 명확히 연결하여 결정에 영향을 줄 수 있는 요소를 드러냅니다.
+2. [criterion_clarification/essence] 외부 SaaS를 선택했을 때, 우리가 놓치는 기회나 리스크는 무엇인지 구체적으로 논의해볼 수 있을까요?
+   why: 이 질문은 외부 선택의 장단점을 명확히 하고, 결정에 대한 새로운 시각을 제공합니다.
+3. [counterfactual/expansion] 자체 개발이 아닌 외부 SaaS를 선택했을 경우, 어떤 장점이 있을지 상상해볼 수 있을까요?
+   why: 이 질문은 현재의 결정 방향을 재구성하여 다른 가능성을 탐색하도록 유도합니다.
+
+### C) Q-Agent pipeline
+status=done generated=8 selected=3 rejected=False
+1. [reframing/blind_spot] 우리가 보안 문제를 어떻게 해결할 수 있을지에 대한 대안을 고려해본 적이 있나요?
+   final=0.889 badges=['info_gain', 'non_redundant', 'assumption', 'depth', 'relevant'] rationale: 이 질문은 보안 문제 해결을 위한 대안을 탐색하게 하여 의사결정에 중요한 정보를 제공할 수 있다.
+2. [criterion_clarification/essence] 자체 개발이 더 빠르다는 주장을 지원하는 구체적인 데이터나 사례가 있을까요?
+   final=0.778 badges=['info_gain', 'non_redundant', 'assumption', 'relevant'] rationale: 자체 개발의 속도에 대한 주장을 뒷받침할 구체적인 데이터를 요구함으로써 논의의 깊이를 더할 수 있다.
+3. [assumption_challenge/expansion] 외부 SaaS의 장점과 단점을 명확히 비교해볼 수 있을까요?
+   final=0.756 badges=['info_gain', 'non_redundant', 'assumption', 'relevant'] rationale: 외부 SaaS의 장단점을 비교함으로써 의사결정에 필요한 다양한 관점을 제시할 수 있다.
+
+========================================================================
+CASE: 02_symptom_fixing.txt
+------------------------------------------------------------------------
+[주제: 고객 이탈률 상승 / problem_solving]
+A: 이탈이 늘었으니까 할인 쿠폰을 더 뿌려야 해.
+B: 맞아. 지난번에도 쿠폰 뿌리면 잠깐 줄었잖아.
+C: 근데 쿠폰 끝나면 또 이탈하던데…
+A: 그건 쿠폰 금액이 작아서야. 이번엔 더 세게 가자.
+B: 그럼 다음 주부터 20% 쿠폰 캠페인으로 가자.
+C: …원인은 따로 안 봐도 되나?
+A: 원인은 이탈이 늘어난 거잖아. 빨리 막는 게 우선이야.
+
+### A) Naive LLM
+1. 고객 이탈의 근본적인 원인을 파악하기 위해 어떤 데이터를 분석할 수 있을까요?
+   why: 이탈률 상승의 원인을 이해하면 더 효과적인 해결책을 찾을 수 있습니다.
+2. 쿠폰 외에 고객 유지를 위해 어떤 다른 전략을 고려할 수 있을까요?
+   why: 다양한 접근 방식을 통해 고객의 충성도를 높일 수 있습니다.
+3. 이탈률 감소를 위한 캠페인의 효과를 어떻게 측정할 계획인가요?
+   why: 캠페인의 성공 여부를 평가하기 위해서는 명확한 측정 기준이 필요합니다.
+
+### B) Eval-aligned LLM (평가 기준 유사 프롬프트)
+1. [assumption_challenge/blind_spot] 고객 이탈의 근본 원인을 파악하지 않고 쿠폰을 늘리는 것이 효과적일까요?
+   why: 이 질문은 쿠폰의 효과를 의심하게 하여 근본 원인 분석의 필요성을 드러낸다.
+2. [criterion_clarification/essence] 이탈 고객의 특성을 고려하지 않고 단순히 할인율을 높이는 것이 최선의 해결책인가요?
+   why: 이 질문은 고객 세분화와 맞춤형 접근의 필요성을 강조한다.
+3. [expansion/constraint_relaxation] 쿠폰 외에 고객 이탈을 줄일 수 있는 다른 방법은 무엇이 있을까요?
+   why: 이 질문은 다양한 해결책을 탐색하게 하여 기존 접근의 한계를 확장한다.
+
+### C) Q-Agent pipeline
+status=done generated=8 selected=3 rejected=False
+1. [reframing/expansion] 쿠폰 사용 후 고객이 이탈하는 이유를 어떻게 재정의할 수 있을까요?
+   final=0.76 badges=['info_gain', 'non_redundant', 'assumption', 'relevant'] rationale: Reframing the reasons for customer churn after coupon use can uncover underlying issues and improve retention strategies.
+2. [criterion_clarification/blind_spot] 고객 이탈률을 감소시키기 위해 우리가 놓치고 있는 중요한 지표는 무엇일까요?
+   final=0.944 badges=['info_gain', 'non_redundant', 'assumption', 'depth', 'relevant'] rationale: Identifying key metrics that are overlooked can significantly enhance understanding of customer behavior and inform better decision-making.
+3. [criterion_clarification/essence] 고객 이탈의 원인을 분석하기 위해 어떤 데이터를 수집해야 할까요?
+   final=0.961 badges=['info_gain', 'non_redundant', 'assumption', 'depth', 'relevant'] rationale: Understanding what data to collect for analyzing churn causes is fundamental for informed decision-making and effective problem-solving.
+
+========================================================================
+CASE: 03_overcommit_plan.txt
+------------------------------------------------------------------------
+[주제: Q3 로드맵 / planning_strategy]
+A: 이번 분기엔 신규 기능 3개를 다 넣자. 경쟁사가 먼저 내면 끝이야.
+B: 인원이 빠듯한데… 그래도 다 해야지.
+C: QA 일정도 겹치는데 리스크는?
+A: 리스크는 출시 못하는 거지. 그러니까 더 빨리 가야 해.
+B: 그럼 3개 다 커밋하고, 야근으로 맞추자.
+D: 사용자 리서치는 언제 하지?
+A: 출시 후에 피드백 받으면 돼. 지금은 속도가 생명이야.
+
+### A) Naive LLM
+1. 신규 기능 3개를 동시에 개발하는 것의 장단점은 무엇인가요?
+   why: 이 질문은 다양한 관점에서 프로젝트의 리스크와 이점을 분석할 수 있게 도와줍니다.
+2. QA 일정과 겹치는 상황에서 어떻게 우선순위를 정할 계획인가요?
+   why: 이 질문은 팀의 우선순위 설정 및 자원 배분에 대한 논의를 촉진할 수 있습니다.
+3. 사용자 리서치를 출시 후에 진행하는 것에 대한 대안은 무엇인가요?
+   why: 이 질문은 사용자 피드백을 더 빨리 받을 수 있는 방법을 모색하게 합니다.
+
+### B) Eval-aligned LLM (평가 기준 유사 프롬프트)
+1. [assumption_challenge/blind_spot] 3개 기능을 다 넣는 것이 정말 최선의 선택인가요, 다른 옵션은 없을까요?
+   why: 이 질문은 현재의 결정이 최선인지 재검토하게 하여 다른 가능성을 모색하게 한다.
+2. [criterion_clarification/essence] 리스크를 감수하면서도 3개 기능을 동시에 진행해야 하는 기준은 무엇인가요?
+   why: 이 질문은 현재의 기준이 명확하지 않음을 드러내고, 우선순위를 재조정할 수 있는 기회를 제공한다.
+3. [counterfactual/expansion] 만약 3개 기능을 모두 출시하지 않는다면 어떤 대안적 결과를 예상할 수 있을까요?
+   why: 이 질문은 현재의 결정이 아닌 다른 가능성을 탐색하게 하여, 결정의 방향성을 재고하게 한다.
+
+### C) Q-Agent pipeline
+status=done generated=8 selected=3 rejected=False
+1. [constraint_relaxation/expansion] 리스크를 줄이기 위해 어떤 대안을 고려할 수 있을까요? 예를 들어, 기능 출시 순서를 조정하는 것은 어떤가요?
+   final=0.778 badges=['info_gain', 'non_redundant', 'assumption', 'relevant'] rationale: The question explores alternatives to mitigate risks, prompting discussion on potential adjustments to the release strategy, which could significantly influence decision-making.
+2. [criterion_clarification/blind_spot] QA 일정과 인력 부족이 실제로 어떤 영향을 미칠 수 있는지 구체적으로 논의해볼까요?
+   final=0.876 badges=['info_gain', 'non_redundant', 'assumption', 'depth', 'relevant'] rationale: This question seeks to clarify the specific impacts of the identified risks, which can surface underlying assumptions about the team's capacity and priorities.
+3. [counterfactual/essence] 3개 기능을 모두 출시하는 것이 정말 최선의 선택인가요? 다른 옵션을 고려할 수 있는지 검토해볼까요?
+   final=0.874 badges=['info_gain', 'non_redundant', 'assumption', 'depth', 'relevant'] rationale: The question challenges the assumption that launching all three features is the best option, encouraging exploration of other alternatives that could lead to a more informed decision.
+
+========================================================================
+CASE: 04_narrow_exploration.txt
+------------------------------------------------------------------------
+[주제: 신규 온보딩 UX 아이디어 / idea_exploration]
+A: 튜토리얼을 더 길게 만들면 이탈이 줄 거야.
+B: 아니면 체크리스트를 추가하자.
+C: 아니면 영상을 넣자.
+A: 일단 튜토리얼 늘리는 쪽으로 스케치하자.
+B: 비슷한 서비스들도 다 튜토리얼 길던데.
+C: 다른 방식은… 음, 잘 모르겠네. 튜토리얼이 제일 익숙하니까.
+A: 좋아, 그걸로 프로토타입 가자.
+
+### A) Naive LLM
+1. 튜토리얼을 길게 만드는 것 외에, 사용자 경험을 개선하기 위한 다른 아이디어는 무엇이 있을까요?
+   why: 다양한 아이디어를 모아보면 더 효과적인 솔루션을 찾을 수 있을 것 같아요.
+2. 체크리스트나 영상 같은 다른 방법을 도입할 경우, 어떤 요소가 가장 중요하다고 생각하시나요?
+   why: 각 방법의 핵심 요소를 이해하면, 효과적인 디자인을 만들 수 있을 것 같아요.
+3. 비슷한 서비스에서의 튜토리얼 길이와 사용자 반응은 어땠는지 조사해본 적이 있나요?
+   why: 경쟁사의 사례를 통해 우리의 방향성을 검토할 수 있을 것 같아요.
+
+### B) Eval-aligned LLM (평가 기준 유사 프롬프트)
+1. [assumption_challenge/blind_spot] 튜토리얼을 늘리는 것이 정말 이탈을 줄일 것이라는 가정은 어떤 근거에서 나온 건가요?
+   why: 이 가정을 명확히 하여 결정의 타당성을 높이기 위해서입니다.
+2. [criterion_clarification/essence] 다른 서비스들이 튜토리얼을 길게 하는 이유는 무엇일까요? 그 기준을 우리 서비스에 어떻게 적용할 수 있을까요?
+   why: 기준을 명확히 하여 우리 서비스에 적합한 방향성을 찾기 위해서입니다.
+3. [counterfactual/expansion] 튜토리얼 대신 체크리스트나 영상으로 온보딩을 진행했다면 어떤 결과가 나왔을까요?
+   why: 대안적인 접근을 고려하여 최선의 선택을 찾기 위해서입니다.
+
+### C) Q-Agent pipeline
+status=done generated=8 selected=3 rejected=False
+1. [constraint_relaxation/expansion] 현재 제안된 튜토리얼 길이 증가 외에, 사용자가 온보딩 과정에서 어떤 다른 경험을 원할까요?
+   final=0.667 badges=['info_gain', 'non_redundant', 'relevant'] rationale: This question seeks to explore additional user experiences beyond the proposed tutorial length increase, which can lead to new insights and ideas.
+2. [criterion_clarification/essence] 체크리스트 추가가 사용자의 경험에 어떤 영향을 미칠까요? 다른 대안들과 비교했을 때 장단점은 무엇인가요?
+   final=0.749 badges=['info_gain', 'non_redundant', 'assumption', 'relevant'] rationale: This question analyzes the impact of adding a checklist on user experience, which is crucial for understanding its effectiveness compared to other proposals.
+3. [counterfactual/essence] 튜토리얼 길이를 늘리는 것이 실제로 이탈률 감소에 기여할지, 다른 데이터나 사례를 통해 검증해볼 수 있을까요?
+   final=0.862 badges=['info_gain', 'non_redundant', 'assumption', 'depth', 'relevant'] rationale: This question aims to validate the assumption that increasing tutorial length will reduce dropout rates, which is essential for making informed decisions.
+
+========================================================================
+CASE: 05_coordination_drift.txt
+------------------------------------------------------------------------
+[주제: 스프린트 지연 / progress_coordination]
+A: 디자인 산출물이 늦어서 전부 밀렸어.
+B: 개발은 대기 중이야. 다음 스프린트에 몰아서 하자.
+C: 기획도 아직 확정이 안 됐는데…
+A: 일단 개발은 기존 스펙으로 진행하고, 디자인은 나중에 맞춰.
+B: 그럼 오늘부터 개발 재개하자.
+C: 스펙이 바뀌면 또 버리는 거 아니야?
+A: 바뀌면 그때 고치면 돼. 지금은 멈추는 게 더 손해야.
+
+### A) Naive LLM
+1. 디자인 산출물이 늦어진 이유는 무엇인가요?
+   why: 이유를 파악하면 앞으로의 일정 조정에 도움이 될 수 있습니다.
+2. 다음 스프린트에 몰아서 진행하는 것에 대한 리스크는 무엇인가요?
+   why: 리스크를 이해하면 더 나은 의사결정을 할 수 있습니다.
+3. 기획 확정을 위해 어떤 조치를 취할 수 있을까요?
+   why: 기획 확정이 지연되지 않도록 해결책을 모색해야 합니다.
+
+### B) Eval-aligned LLM (평가 기준 유사 프롬프트)
+1. [assumption_challenge/blind_spot] 지금 스펙으로 개발을 진행하는 것이 정말 최선의 선택인지, 다른 대안은 없었는지 다시 생각해볼 수 있을까요?
+   why: 이 질문은 현재 결정의 타당성을 재검토하게 하여, 다른 가능성을 탐색하도록 유도합니다.
+2. [criterion_clarification/essence] 디자인 산출물이 늦어지는 이유를 명확히 정의하지 않으면, 다음 스프린트의 우선순위가 어떻게 결정될 수 있을까요?
+   why: 이 질문은 문제의 본질을 파악하고, 우선순위 설정의 기준을 명확히 하도록 합니다.
+3. [counterfactual/expansion] 만약 디자인이 현재 스펙에 맞춰진다면, 개발팀이 겪을 수 있는 구체적인 문제는 무엇일까요?
+   why: 이 질문은 현재 결정의 결과에 대한 구체적인 상황을 상상하게 하여, 더 나은 결정을 내릴 수 있도록 합니다.
+
+### C) Q-Agent pipeline
+status=done generated=8 selected=3 rejected=False
+1. [criterion_clarification/expansion] 기존 스펙으로 개발을 진행하는 것의 장단점은 무엇인가요?
+   final=0.778 badges=['info_gain', 'non_redundant', 'assumption', 'relevant'] rationale: This question addresses the pros and cons of proceeding with existing specifications, which is essential for evaluating the current proposal.
+2. [counterfactual/blind_spot] 기획이 확정되지 않은 상황에서 스펙이 변경되면 어떤 추가적인 문제들이 발생할까요?
+   final=0.982 badges=['info_gain', 'non_redundant', 'assumption', 'depth', 'relevant'] rationale: This question highlights potential issues arising from changing specifications without finalized planning, surfacing critical assumptions about project management.
+3. [criterion_clarification/essence] 스펙이 변경될 경우, 어떤 프로세스를 통해 변경 사항을 관리할 수 있을까요?
+   final=0.741 badges=['info_gain', 'non_redundant', 'assumption', 'relevant'] rationale: This question focuses on managing changes in specifications, which is vital for maintaining project integrity amidst uncertainties.
+
