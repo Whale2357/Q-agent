@@ -68,61 +68,46 @@ function Icon({ name }: { name: IconName }) {
   return <svg viewBox="0 0 24 24" aria-hidden="true" className="icon">{paths[name]}</svg>;
 }
 
+function BrainLogoIcon() {
+  return (
+    <svg className="brain-logo-icon" viewBox="0 0 32 32" aria-hidden="true">
+      <path className="brain-logo-body" d="M15.9 27.4c-1.9 1.6-4.9.8-5.5-1.6-2.7.4-4.9-1.8-4.5-4.5-2.5-.8-3.3-4-1.5-5.9-1.5-2.2-.3-5.2 2.3-5.8-.1-2.7 2.3-4.7 4.9-3.9 1.1-2.5 4.5-2.9 6.3-.8 1.8-2.1 5.2-1.7 6.3.8 2.6-.8 5 1.2 4.9 3.9 2.6.6 3.8 3.6 2.3 5.8 1.8 1.9 1 5.1-1.5 5.9.4 2.7-1.8 4.9-4.5 4.5-.6 2.4-3.6 3.2-5.5 1.6Z" />
+      <path className="brain-logo-folds" d="M16 5.8c-1.7 2-1.7 4.1-.1 6-1.7 1.7-1.6 4.1.1 5.7-1.5 1.8-1.3 4.4 0 6.1M11.4 8.1c-.4 2.1.7 3.5 2.7 4M7.5 12.3c2.2-.3 3.6.8 3.8 2.8M7 18.4c1.9-1.5 4.1-.8 5 1.2M20.6 8.1c.4 2.1-.7 3.5-2.7 4M24.5 12.3c-2.2-.3-3.6.8-3.8 2.8M25 18.4c-1.9-1.5-4.1-.8-5 1.2" />
+    </svg>
+  );
+}
+
 function BrainIcon() {
   return (
     <svg className="brain-icon" viewBox="0 0 160 120" aria-hidden="true">
       <defs>
-        <radialGradient id="brain-fill" cx="0" cy="0" r="1" gradientTransform="translate(56 28) rotate(50) scale(108 116)" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#eefaff" stopOpacity=".92" />
-          <stop offset="0.34" stopColor="#b9dff1" stopOpacity=".88" />
-          <stop offset="0.72" stopColor="#78b5d5" stopOpacity=".84" />
-          <stop offset="1" stopColor="#4b83aa" stopOpacity=".82" />
-        </radialGradient>
-        <radialGradient id="brain-gloss" cx="0" cy="0" r="1" gradientTransform="translate(57 31) rotate(49) scale(56 45)" gradientUnits="userSpaceOnUse">
-          <stop stopColor="white" stopOpacity=".82" />
-          <stop offset=".55" stopColor="white" stopOpacity=".18" />
-          <stop offset="1" stopColor="white" stopOpacity="0" />
-        </radialGradient>
-        <radialGradient id="brain-puff" cx="0" cy="0" r="1" gradientTransform="translate(.34 .28) rotate(48) scale(.76)">
-          <stop stopColor="white" stopOpacity=".56" />
-          <stop offset=".48" stopColor="#d8f1fc" stopOpacity=".25" />
-          <stop offset="1" stopColor="#4f94ba" stopOpacity=".07" />
-        </radialGradient>
         <linearGradient id="brain-neon-line" x1="24" y1="28" x2="136" y2="96" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#8deaff" />
-          <stop offset=".48" stopColor="#38bdf8" />
-          <stop offset="1" stopColor="#3b82f6" />
+          <stop stopColor="#d4ffe0" />
+          <stop offset=".48" stopColor="#68ed94" />
+          <stop offset="1" stopColor="#20c96b" />
         </linearGradient>
         <path id="brain-shape" d="M79.8 108.7c-7.7 6.2-19.8 3.5-23.7-5.6-10.4 2.8-20.6-5.1-20.8-15.9-10.4-3.2-14.7-16.1-8.3-24.8-6.1-8.6-1.7-20.8 8.2-24.1-.4-10.8 9.3-19 19.8-16.7C60.2 12 72.9 9.9 80 17.9c7.1-8 19.8-5.9 25 3.7 10.5-2.3 20.2 5.9 19.8 16.7 9.9 3.3 14.3 15.5 8.2 24.1 6.4 8.7 2.1 21.6-8.3 24.8-.2 10.8-10.4 18.7-20.8 15.9-3.9 9.1-16 11.8-23.7 5.6Z" />
         <g id="brain-fold-pattern">
-          <path d="M80 18c-5.7 6.8-5.9 14.8-1.1 21.8-6.6 6-6.3 15.5.4 21.1-5.5 7-5.1 16.9.7 22.8-4.5 7.1-3.8 17.3-.2 24.4" />
-          <path d="M54 22c-1.2 8.1 2.7 13.5 10.3 15.4M36 39c8.7-.8 14 3.8 14.6 11.8M27 63c7.1-5.4 15.5-3.1 19.2 4.5M35 87c7.7-2.8 14.5.7 16.5 8.3" />
-          <path d="M67 39c-8.3 1.3-12.2 7.8-9.6 15.6M45 56c3.5 6.8 9.1 9.2 16.5 6.7M56 70c-6.4 3.1-8.1 10.2-4.1 16M65 84c-5.5 5.1-4.5 13.1 1.8 17.2" />
-          <path d="M106 22c1.2 8.1-2.7 13.5-10.3 15.4M124 39c-8.7-.8-14 3.8-14.6 11.8M133 63c-7.1-5.4-15.5-3.1-19.2 4.5M125 87c-7.7-2.8-14.5.7-16.5 8.3" />
-          <path d="M93 39c8.3 1.3 12.2 7.8 9.6 15.6M115 56c-3.5 6.8-9.1 9.2-16.5 6.7M104 70c6.4 3.1 8.1 10.2 4.1 16M95 84c5.5 5.1 4.5 13.1-1.8 17.2" />
-          <path d="M70 25c-5.1-1.8-9.4.3-11.6 5.8M90 25c5.1-1.8 9.4.3 11.6 5.8M64 68c5.5 1.2 8.6 5.3 7.7 10.5M96 68c-5.5 1.2-8.6 5.3-7.7 10.5" />
+          <path id="brain-fold-center" pathLength="100" d="M80 18c-5.7 6.8-5.9 14.8-1.1 21.8-6.6 6-6.3 15.5.4 21.1-5.5 7-5.1 16.9.7 22.8-4.5 7.1-3.8 17.3-.2 24.4" />
+          <path id="brain-fold-left-outer" pathLength="100" d="M54 22c-1.2 8.1 2.7 13.5 10.3 15.4M36 39c8.7-.8 14 3.8 14.6 11.8M27 63c7.1-5.4 15.5-3.1 19.2 4.5M35 87c7.7-2.8 14.5.7 16.5 8.3" />
+          <path id="brain-fold-left-inner" pathLength="100" d="M67 39c-8.3 1.3-12.2 7.8-9.6 15.6M45 56c3.5 6.8 9.1 9.2 16.5 6.7M56 70c-6.4 3.1-8.1 10.2-4.1 16M65 84c-5.5 5.1-4.5 13.1 1.8 17.2" />
+          <path id="brain-fold-right-outer" pathLength="100" d="M106 22c1.2 8.1-2.7 13.5-10.3 15.4M124 39c-8.7-.8-14 3.8-14.6 11.8M133 63c-7.1-5.4-15.5-3.1-19.2 4.5M125 87c-7.7-2.8-14.5.7-16.5 8.3" />
+          <path id="brain-fold-right-inner" pathLength="100" d="M93 39c8.3 1.3 12.2 7.8 9.6 15.6M115 56c-3.5 6.8-9.1 9.2-16.5 6.7M104 70c6.4 3.1 8.1 10.2 4.1 16M95 84c5.5 5.1 4.5 13.1-1.8 17.2" />
+          <path id="brain-fold-accents" pathLength="100" d="M70 25c-5.1-1.8-9.4.3-11.6 5.8M90 25c5.1-1.8 9.4.3 11.6 5.8M64 68c5.5 1.2 8.6 5.3 7.7 10.5M96 68c-5.5 1.2-8.6 5.3-7.7 10.5" />
         </g>
-        <clipPath id="brain-clip"><use href="#brain-shape" /></clipPath>
       </defs>
       <ellipse className="brain-ground-shadow" cx="80" cy="111" rx="37" ry="5" />
       <g className="brain-bouncy">
-        <use className="brain-body" href="#brain-shape" fill="url(#brain-fill)" stroke="#568eaf" strokeOpacity=".58" strokeWidth="1.6" strokeLinejoin="round" />
-        <g className="brain-puffs" clipPath="url(#brain-clip)" fill="url(#brain-puff)">
-          <ellipse cx="48" cy="35" rx="21" ry="17" />
-          <ellipse cx="72" cy="27" rx="18" ry="16" />
-          <ellipse cx="103" cy="34" rx="23" ry="18" />
-          <ellipse cx="37" cy="60" rx="20" ry="19" />
-          <ellipse cx="65" cy="56" rx="22" ry="20" />
-          <ellipse cx="96" cy="57" rx="22" ry="20" />
-          <ellipse cx="124" cy="61" rx="20" ry="19" />
-          <ellipse cx="48" cy="86" rx="23" ry="19" />
-          <ellipse cx="79" cy="88" rx="22" ry="21" />
-          <ellipse cx="111" cy="86" rx="23" ry="19" />
-        </g>
-        <ellipse className="brain-gloss" cx="58" cy="35" rx="46" ry="35" fill="url(#brain-gloss)" clipPath="url(#brain-clip)" />
-        <path className="brain-sheen" d="M38 42c2-9 9-15 18-17" clipPath="url(#brain-clip)" />
+        <use className="brain-outline" href="#brain-shape" />
         <g className="brain-folds"><use href="#brain-fold-pattern" /></g>
-        <g className="brain-neon-folds" stroke="url(#brain-neon-line)"><use href="#brain-fold-pattern" /></g>
+        <g className="brain-neon-folds" stroke="url(#brain-neon-line)">
+          <use href="#brain-fold-center" />
+          <use href="#brain-fold-left-outer" />
+          <use href="#brain-fold-left-inner" />
+          <use href="#brain-fold-right-outer" />
+          <use href="#brain-fold-right-inner" />
+          <use href="#brain-fold-accents" />
+        </g>
       </g>
     </svg>
   );
@@ -865,8 +850,8 @@ export default function HomePage() {
       <div className="ambient-light ambient-light-two" aria-hidden="true" />
       <header className="topbar">
         <button className="mobile-history-button" type="button" aria-label="기록 열기" onClick={() => setSidebarOpen(true)}><Icon name="history" /></button>
-        <a className="brand" href="/" aria-label="Q-Agent 홈">
-          <span className="brand-mark"><Icon name="spark" /></span><span>Q-Agent</span>
+        <a className="brand" href="/" aria-label="프랑켄슈타인 홈">
+          <span className="brand-mark"><BrainLogoIcon /></span><span>프랑켄슈타인</span>
         </a>
         <span className="brand-subtitle">회의를 녹음하면 맥락을 실시간으로 읽고 후보 질문을 생성·평가해, 기준을 넘은 질문만 건넵니다.</span>
         <div className={`service-state${realtimeReady === false ? " offline" : ""}`}><span aria-hidden="true" />{realtimeReady === null ? "realtime 확인 중" : realtimeReady ? "realtime 연결됨" : "realtime 연결 필요"}</div>
