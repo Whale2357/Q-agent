@@ -250,7 +250,7 @@ export default function HomePage() {
   const liveTranscriptValue = useRef("");
   const latestDiagnosis = useRef<SuccessfulDiagnosis | null>(null);
   const pendingAudioBlob = useRef<Blob | null>(null);
-  const pendingSource = useRef<"record" | "upload">("record");
+  const pendingSource = useRef<InputMode>("record");
   const pendingTitle = useRef("");
   const pendingHistoryId = useRef<string | null>(null);
   const realtimeStopped = useRef(false);
@@ -365,7 +365,7 @@ export default function HomePage() {
     audioContext.current = null;
   }
 
-  function prepareSession(source: "record" | "upload", title: string, blob: Blob | null) {
+  function prepareSession(source: InputMode, title: string, blob: Blob | null) {
     setThoughts([]);
     setDismissingIds(new Set());
     setIsEmittingQuestion(false);
@@ -763,14 +763,40 @@ export default function HomePage() {
     }
   }
 
+  function isAudioUpload(file: File) {
+    return (
+      file.type.startsWith("audio/") ||
+      /\.(mp3|wav|m4a|aac|ogg|flac|webm)$/i.test(file.name)
+    );
+  }
+
+  function isTextUpload(file: File) {
+    return (
+      file.type.startsWith("text/") ||
+      file.type === "application/json" ||
+      /\.(txt|md|markdown|csv|log|json)$/i.test(file.name)
+    );
+  }
+
   function selectFile(file: File | null) {
     if (!file || isThinking) return;
-    if (!file.type.startsWith("audio/") && !/\.(mp3|wav|m4a|aac|ogg|flac|webm)$/i.test(file.name)) {
-      setWorkspaceMessage("processing", "오디오 파일만 업로드할 수 있습니다.");
+    const audio = isAudioUpload(file);
+    const text = isTextUpload(file);
+    if (!audio && !text) {
+      setWorkspaceMessage(
+        "processing",
+        "녹음 파일(MP3, WAV 등) 또는 텍스트 파일(TXT, MD 등)만 업로드할 수 있습니다."
+      );
       return;
     }
-    if (file.size > 200 * 1024 * 1024) {
-      setWorkspaceMessage("processing", "파일은 200MB 이하만 업로드할 수 있습니다.");
+    const maxBytes = audio ? 200 * 1024 * 1024 : 5 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      setWorkspaceMessage(
+        "processing",
+        audio
+          ? "오디오 파일은 200MB 이하만 업로드할 수 있습니다."
+          : "텍스트 파일은 5MB 이하만 업로드할 수 있습니다."
+      );
       return;
     }
     setSelectedFile(file);
@@ -808,8 +834,64 @@ export default function HomePage() {
     }
   }
 
+  async function sendUploadedText(file: File) {
+    prepareSession("text", file.name, null);
+    setActivity("processing");
+    try {
+      const content = (await file.text()).trim();
+      if (content.length < 8) {
+        throw new Error("텍스트가 너무 짧습니다. 8자 이상 입력해 주세요.");
+      }
+      liveTranscriptValue.current = content;
+      const response = await fetch("/api/realtime/text", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: content, language: "ko" }),
+        cache: "no-store",
+      });
+      const payload = (await response.json()) as {
+        ok?: boolean;
+        diagnosis?: SuccessfulDiagnosis;
+        transcript?: string;
+        error?: { message?: string };
+      };
+      if (!response.ok || !payload.ok || !payload.diagnosis) {
+        throw new Error(payload.error?.message ?? "텍스트 분석에 실패했습니다.");
+      }
+      if (payload.transcript) liveTranscriptValue.current = payload.transcript;
+      realtimeStopped.current = true;
+      sessionEndedNormally.current = true;
+      applyDiagnosis(payload.diagnosis);
+      setActivity("done");
+      if (payload.diagnosis.rejected || payload.diagnosis.questions.length === 0) {
+        setWorkspaceMessage(
+          "rejected",
+          "질문이 비어 반려되었습니다. 오류가 아니라 평가 기준을 넘은 질문이 없는 상태입니다."
+        );
+      } else {
+        clearWorkspaceMessage();
+      }
+      await persistCompletedSession();
+    } catch (caught) {
+      const message =
+        caught instanceof Error ? caught.message : "텍스트 파일 분석에 실패했습니다.";
+      const kind: WorkspaceMessageKind = /네트워크|서버|realtime|연결/i.test(message)
+        ? "network"
+        : "processing";
+      pendingErrorMessage.current = message;
+      setActivity("error");
+      setWorkspaceMessage(kind, message);
+      await persistCompletedSession(message);
+    }
+  }
+
   async function sendUploadedAudio() {
     if (!selectedFile || isThinking) return;
+    if (isTextUpload(selectedFile) && !isAudioUpload(selectedFile)) {
+      await sendUploadedText(selectedFile);
+      return;
+    }
+
     prepareSession("upload", selectedFile.name, selectedFile);
     setActivity("processing");
 
@@ -885,7 +967,7 @@ export default function HomePage() {
       text: question.text,
       createdAt: index,
     })));
-    setMode(item.source === "upload" ? "upload" : "record");
+    setMode(item.source === "upload" || item.source === "text" ? "upload" : "record");
     setRecordingSeconds(item.durationSeconds ?? 0);
     setActivity("done");
     if (item.status === "rejected" || item.result?.rejected) {
@@ -950,7 +1032,7 @@ export default function HomePage() {
         <section className="brain-workspace" aria-label="회의 질문 생성">
           <div className={`mode-switch ${mode}`} role="tablist" aria-label="입력 모드">
             <span className="mode-switch-slider" aria-hidden="true" />
-            <button type="button" role="tab" aria-selected={mode === "upload"} disabled={isThinking} onClick={() => switchMode("upload")}><Icon name="upload" />녹음 파일 업로드</button>
+            <button type="button" role="tab" aria-selected={mode === "upload"} disabled={isThinking} onClick={() => switchMode("upload")}><Icon name="upload" />파일 업로드</button>
             <button type="button" role="tab" aria-selected={mode === "record"} disabled={isThinking} onClick={() => switchMode("record")}><Icon name="mic" />녹음 · 실시간</button>
           </div>
 
@@ -979,12 +1061,27 @@ export default function HomePage() {
             {mode === "upload" ? (
               <>
                 <label className={`upload-zone${selectedFile ? " has-file" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
-                  <input type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.webm" disabled={isThinking} onChange={handleFileChange} />
+                  <input
+                    type="file"
+                    accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.webm,text/plain,.txt,.md,.markdown,.csv,.log,.json,application/json"
+                    disabled={isThinking}
+                    onChange={handleFileChange}
+                  />
                   <span className="upload-zone-icon"><Icon name={selectedFile ? "check" : "upload"} /></span>
-                  <strong>{selectedFile ? selectedFile.name : "녹음 파일을 여기에 놓거나 클릭하세요"}</strong>
-                  <span>{selectedFile ? `${(selectedFile.size / 1024 / 1024).toFixed(1)}MB · ${formatDuration(recordingSeconds)}` : "MP3, WAV, M4A, OGG, FLAC, WebM · 최대 200MB"}</span>
+                  <strong>
+                    {selectedFile
+                      ? selectedFile.name
+                      : "녹음·텍스트 파일을 놓거나 클릭하세요"}
+                  </strong>
+                  <span>
+                    {selectedFile
+                      ? isTextUpload(selectedFile) && !isAudioUpload(selectedFile)
+                        ? `${(selectedFile.size / 1024).toFixed(1)}KB · 텍스트`
+                        : `${(selectedFile.size / 1024 / 1024).toFixed(1)}MB · ${formatDuration(recordingSeconds)}`
+                      : "오디오 MP3/WAV 등 · 텍스트 TXT/MD 등 · 오디오 최대 200MB"}
+                  </span>
                 </label>
-                <button className="generate-button" type="button" disabled={!selectedFile || isThinking} onClick={sendUploadedAudio}><Icon name="spark" />질문 생성 시작</button>
+                <button className="generate-button" type="button" disabled={!selectedFile || isThinking} onClick={() => void sendUploadedAudio()}><Icon name="spark" />질문 생성 시작</button>
               </>
             ) : (
               <div className="live-controls">
