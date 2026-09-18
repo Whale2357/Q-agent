@@ -1,8 +1,12 @@
-# Q-Agent MVP2 — 범위 · 계약 방향 · 브랜치 운영
+# Q-Agent MVP2 — (역사) 범위 · 계약 방향 · 브랜치 운영
 
-> 통합 브랜치: **`develop_2`**  
-> MVP1 통합 브랜치: **`develop`** → 배포는 **`main`**  
-> 관련: [KICKOFF.md](./KICKOFF.md), [ENGINE_ROADMAP.md](./ENGINE_ROADMAP.md), [INFRASTRUCTURE.md](./INFRASTRUCTURE.md)
+> **ARCHIVE (2026-09-18)**  
+> TypeScript `extract`/`engine` 분리는 **채택되지 않았고 코드에서 제거**되었습니다.  
+> 현재 런타임·배포는 [INFRASTRUCTURE.md](./INFRASTRUCTURE.md) / [README.md](../README.md)만 따르세요.  
+> 아래 본문은 당시 브랜치 논의 기록입니다.
+>
+> 통합 브랜치(당시): **`develop_2`**  
+> 관련(당시): [KICKOFF.md](./KICKOFF.md), [INFRASTRUCTURE.md](./INFRASTRUCTURE.md)
 
 ---
 

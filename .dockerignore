@@ -1,0 +1,15 @@
+.git
+.next
+**/node_modules
+**/.venv
+**/__pycache__
+**/*.pyc
+data
+*.db
+.env
+**/.env
+!**/.env.example
+services/realtime/scripts/*.out.txt
+fixtures/quality_ab
+agent-transcripts
+apps/web/.next

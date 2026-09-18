@@ -5,19 +5,20 @@
 ## 구조
 
 ```
-apps/web              Next.js 프론트 + BFF (/api/*)
-services/extract      음성/텍스트 → Transcript
-services/engine       질문 생성 + 선발
-services/realtime     로컬 마이크 → Whisper → 맥락 상태 → 질문 후보/검증
+apps/web              Next.js 프론트 + BFF (/api/health, /api/realtime/text|session)
+services/realtime     마이크/텍스트 → STT → 맥락 → 질문 후보/검증
 packages/contracts    공유 TypeScript 계약
 fixtures/             샘플 회의록
-scripts/smoke-test.mjs 모듈 통신 검증
+scripts/smoke-test.mjs web ↔ realtime 통신 검증
 ```
 
-협업 규칙: [`docs/KICKOFF.md`](docs/KICKOFF.md)  
+활성 경로는 **웹 → realtime** 입니다. 예전 TypeScript `extract`/`engine` 서비스는 제거했습니다.
+
+협업 규칙(역사): [`docs/KICKOFF.md`](docs/KICKOFF.md)  
 최종 기획: [`docs/최종_기획안.md`](docs/최종_기획안.md)  
-인프라·통신 검증: [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md)  
-MVP2 범위·브랜치 운영 (`develop_2`): [`docs/MVP2.md`](docs/MVP2.md)
+인프라·통신·배포: [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md)  
+오늘(2026-09-18) 작업 정리: [`docs/2026-09-18_작업정리.md`](docs/2026-09-18_작업정리.md)  
+브랜치 메모(역사): [`docs/MVP2.md`](docs/MVP2.md)
 
 ## 로컬 실행 (웹 + realtime)
 
@@ -93,32 +94,38 @@ ollama pull qwen3:4b
 ollama pull qwen3:8b
 ```
 
-### 레거시 extract/engine 확인
+### 스모크 테스트
 
-기존 `extract`/`engine`은 데모 및 계약 스모크 테스트용으로 남아 있으며 현재
-웹 화면에서는 호출하지 않습니다.
+realtime이 떠 있는 상태에서:
 
 ```bash
-npm run dev:extract
-npm run dev:engine
 npm run smoke
+# web까지 포함하려면
+WEB_URL=http://localhost:3000 npm run smoke
 ```
 
 ## Docker Compose
 
+텍스트·녹음 모두 같은 Compose 스택으로 올립니다.
+
 ```bash
+# services/realtime/.env 에 OPENAI_API_KEY 필요
 docker compose up --build
 ```
 
-현재 Compose는 레거시 TypeScript 서비스 묶음이며 realtime GPU 서버는 별도로
-실행해야 합니다.
+- Web: http://localhost:3000  
+- Realtime: http://localhost:8765/health  
+- 브라우저 WS: `ws://localhost:8765/v1/realtime` (HTTPS 배포 시 `wss://`)
+
+공개 배포에서는 `CORS_ORIGIN`, `NEXT_PUBLIC_REALTIME_WS_URL`(wss),  
+`REALTIME_API_KEY`(web·realtime 동일)를 설정하세요. 세부:
+[`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md)
 
 ## 배포 요약
 
 | 모듈 | 권장 호스트 | 환경변수 |
 | --- | --- | --- |
-| web | Next.js 호스트 (`apps/web`) | `REALTIME_SERVICE_URL`, `NEXT_PUBLIC_REALTIME_WS_URL` |
-| realtime | CPU API 호스트 또는 GPU/로컬 PC | `LLM_PROVIDER`, `STT_PROVIDER`, `OPENAI_API_KEY` 또는 `OLLAMA_*` |
-| extract / engine | 레거시 데모 | `EXTRACT_SERVICE_URL`, `ENGINE_SERVICE_URL` |
+| web | Vercel 등 (`apps/web`) | `REALTIME_SERVICE_URL`, `NEXT_PUBLIC_REALTIME_WS_URL`, `REALTIME_API_KEY` |
+| realtime | Docker/CPU 호스트 | `OPENAI_API_KEY`, `CORS_ORIGIN`, `REALTIME_API_KEY`, `MAX_AUDIO_SESSIONS` |
 
 **비밀키는 커밋하지 마세요.** `.env`는 gitignore 대상입니다.

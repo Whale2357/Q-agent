@@ -12,13 +12,11 @@ function upstreamHeaders(init?: HeadersInit): Headers {
   return headers;
 }
 
-export async function POST(request: Request) {
+export async function POST() {
   try {
-    const body = await request.json();
-    const upstream = await fetch(`${REALTIME_SERVICE_URL}/v1/text`, {
+    const upstream = await fetch(`${REALTIME_SERVICE_URL}/v1/session`, {
       method: "POST",
-      headers: upstreamHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(body),
+      headers: upstreamHeaders(),
       cache: "no-store",
     });
     const data = await upstream.json();

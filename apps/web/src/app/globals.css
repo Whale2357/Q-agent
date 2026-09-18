@@ -276,6 +276,10 @@ legend strong { float: right; color: var(--ink); font-weight: 500; }
 .live-transcript span { display: block; margin-top: 3px; overflow: hidden; color: #8c969f; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .stop-recording, .record-again { min-height: 34px; margin-top: 13px; padding: 0 13px; display: flex; align-items: center; gap: 6px; border-radius: 10px; cursor: pointer; font-size: 10px; font-weight: 600; }
 .stop-recording { color: var(--danger); background: rgba(255,255,255,.74); border: 1px solid rgba(174,60,69,.23); }
+.recording-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 13px; align-items: center; }
+.recording-actions .diagnose-button { margin-top: 0; flex: 1; min-width: 140px; }
+.recording-actions .stop-recording { margin-top: 0; }
+.input-hint { margin-top: 10px; font-size: 11px; color: var(--muted, #667); line-height: 1.4; }
 .record-again { color: var(--accent); background: rgba(231,240,247,.66); border: 1px solid rgba(255,255,255,.8); }
 .stop-recording .icon, .record-again .icon { width: 13px; }
 .recording-ready { display: flex; align-items: center; gap: 11px; text-align: left; }

@@ -170,6 +170,13 @@ class Repository:
         return [self._row_to_segment(row) for row in rows]
 
     def save_context(self, state: QuestionContextState) -> None:
+        # Persist a compact snapshot; transcript/questions live in their tables.
+        compact = state.to_dict()
+        compact["recent_transcript"] = list(state.recent_transcript[-20:])
+        compact["question_history"] = {
+            key: list(items[:10])
+            for key, items in (state.question_history or {}).items()
+        }
         with self._lock, self._connection:
             self._connection.execute(
                 """
@@ -179,7 +186,7 @@ class Repository:
                 (
                     state.meeting_id,
                     state.version,
-                    json.dumps(state.to_dict(), ensure_ascii=False),
+                    json.dumps(compact, ensure_ascii=False),
                     state.updated_at,
                 ),
             )
@@ -297,17 +304,36 @@ class Repository:
 
     def question_history(self, meeting_id: str) -> dict[str, list[dict[str, object]]]:
         mapping = {
-            "active": [QuestionStatus.ELIGIBLE],
-            "displayed": [QuestionStatus.DISPLAYED],
-            "resolved": [QuestionStatus.RESOLVED, QuestionStatus.EXPIRED],
-            "rejected": [QuestionStatus.REJECTED],
+            "active": {QuestionStatus.ELIGIBLE.value},
+            "displayed": {QuestionStatus.DISPLAYED.value},
+            "resolved": {
+                QuestionStatus.RESOLVED.value,
+                QuestionStatus.EXPIRED.value,
+            },
+            "rejected": {QuestionStatus.REJECTED.value},
+            "parked": {QuestionStatus.CANDIDATE.value},
         }
-        history: dict[str, list[dict[str, object]]] = {}
-        for key, statuses in mapping.items():
-            history[key] = [
-                {"id": question.id, "text": question.text, "status": question.status.value}
-                for question in self.questions_by_status(meeting_id, statuses)[:20]
-            ]
+        history: dict[str, list[dict[str, object]]] = {key: [] for key in mapping}
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT id, text, status FROM questions
+                WHERE meeting_id = ?
+                ORDER BY final_score DESC, generated_at ASC
+                """,
+                (meeting_id,),
+            ).fetchall()
+        for row in rows:
+            status = str(row["status"])
+            item = {
+                "id": row["id"],
+                "text": row["text"],
+                "status": status,
+            }
+            for key, statuses in mapping.items():
+                if status in statuses and len(history[key]) < 20:
+                    history[key].append(item)
+                    break
         return history
 
     def close(self) -> None:

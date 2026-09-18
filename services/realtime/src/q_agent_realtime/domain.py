@@ -88,6 +88,7 @@ class QuestionContextState:
             "displayed": [],
             "resolved": [],
             "rejected": [],
+            "parked": [],
         }
     )
     last_processed_segment_id: int = 0
@@ -104,7 +105,13 @@ class QuestionContextState:
             items = incoming_discussion.get(key, [])
             discussion[key] = items if isinstance(items, list) else []
 
-        history = {"active": [], "displayed": [], "resolved": [], "rejected": []}
+        history = {
+            "active": [],
+            "displayed": [],
+            "resolved": [],
+            "rejected": [],
+            "parked": [],
+        }
         incoming_history = value.get("question_history") or {}
         for key in history:
             items = incoming_history.get(key, [])

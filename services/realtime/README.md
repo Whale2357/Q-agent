@@ -4,11 +4,11 @@ LangGraph 없이 순수 Python으로 동작하며, 로컬 모델과 OpenAI API�
 회의 파이프라인에서 선택할 수 있습니다.
 
 ```text
-브라우저 마이크 -> CPU VAD/버퍼 -> faster-whisper(GPU) -> SQLite
-      -> 5초 Context Agent(Qwen3 4B) -> Question Context State
-      -> 30초 Generator(Qwen3 8B) -> 질문 후보 8개
-      -> 즉시 + 60초 Evaluator(Qwen3 1.7B) -> 3대 지표 평가/활성 질문 최대 3개
-      -> 사용자 요청 또는 20초 정적 -> 질문 한 문장 출력
+브라우저 마이크 -> VAD/버퍼 -> STT -> SQLite 원문
+      -> Context(5초) -> Question Context State
+      -> Generator(맥락 버전↑ + 최소 25초) -> 후보 저장
+      -> Hybrid Evaluator(규칙 필터 + LLM 소프트 점수) -> 활성 풀 ≤3
+      -> 침묵 20초 또는 사용자 ask -> 최종 질문 1문장 표시
 ```
 
 공개 배포에서는 프런트 계약을 바꾸지 않고 제공자만 교체합니다.
@@ -16,21 +16,23 @@ LangGraph 없이 순수 Python으로 동작하며, 로컬 모델과 OpenAI API�
 ```text
 브라우저 마이크 -> Silero VAD -> OpenAI STT -> SQLite
               -> Question Context State -> OpenAI LLM
-              -> 기존 질문 생성/평가/선발 -> 브라우저
+              -> 하이브리드 평가/선발 -> 침묵·요청 시 브라우저에 1문장
 ```
 
-기존 `services/extract`, `services/engine`의 TypeScript 데모 계약은 변경하지 않습니다.
-현재 웹은 이 서비스의 HTTP/WebSocket 어댑터를 직접 사용하며 후보 필드는
-MVP2의 `category`와 `operator` 방향에 맞춰져 있습니다.
+현재 웹은 이 서비스의 HTTP/WebSocket만 사용합니다. 후보 필드는
+`category`와 `operator` 방향에 맞춰져 있습니다.
 
 ## 현재 책임
 
-- CPU/Python: 오디오 수신, VAD, 버퍼, transcript·상태 저장, 독립 주기 제어
+- CPU/Python: 오디오 수신, VAD, 버퍼, transcript·상태 저장, 이벤트 기반 주기 제어
 - GPU/faster-whisper: 확정된 발화의 음성 인식
-- Qwen Context Agent: 5초마다 새 transcript를 Question Context State에 병합
-- Qwen Generator: 30초마다 근거 segment가 연결된 후보 8개 생성
-- Qwen Evaluator: 새 후보 즉시 평가, 활성 질문을 60초마다 재평가
-- Web API: 텍스트 요청과 브라우저 PCM WebSocket 수신, 전사·질문 이벤트 송신
+- Qwen Context Agent: transcript dirty 시(debounce) Question Context State 병합
+- Qwen Generator: Context 갱신 신호 + 최소 25초 간격으로 후보 5개 생성·저장
+- Hybrid Evaluator: 규칙(길이·의문형·근거·중복·금칙) + LLM(정보이득·가정·stale)
+- 최종 노출: 서버 침묵 20초 또는 WebSocket `ask` / 녹음 종료 시 1문장
+- Stop 최적화: 활성 풀이 있으면 즉시 노출(불필요한 3단 LLM 생략)
+- 세션 게이트: `POST /v1/session` 단회 토큰 + `MAX_AUDIO_SESSIONS` 동시 녹음 상한
+- HTTP 보호: `REALTIME_API_KEY` 설정 시 `/v1/text`·`/v1/session`에 Bearer 필요
 
 질문에는 생성 당시 `context_version`이 저장됩니다. LLM 처리 중 맥락 버전이
 바뀌면 해당 결과는 저장하지 않아 오래된 질문이 화면에 노출되는 것을 막습니다.
@@ -75,7 +77,8 @@ q-agent-realtime --device 1 --meeting-objective "Q-Agent 시스템 설계"
 - 발화가 끝난 뒤 확정 transcript가 출력되고 SQLite에 저장됩니다.
 - Enter를 누르면 현재 최고 활성 질문을 요청합니다.
 - `q`를 입력하고 Enter를 누르면 회의를 종료합니다.
-- 활성 질문이 존재하고 20초 이상 정적이면 질문 한 문장이 자동 출력됩니다.
+- **최종 질문 노출:** 활성 질문이 있고 **침묵 ≥ 20초**(`SILENCE_TRIGGER_SECONDS`, 기본 20)이면
+  한 문장을 자동 출력합니다. 사용자 요청(Enter)은 침묵과 무관하게 언제든 가능합니다.
 
 ## 웹 프런트 연결
 
@@ -85,14 +88,19 @@ q-agent-realtime --device 1 --meeting-objective "Q-Agent 시스템 설계"
 q-agent-realtime-server --host 127.0.0.1 --port 8765
 ```
 
-- `WS /v1/realtime`: 16 kHz mono Float32 PCM 스트림을 받아 전사·질문 이벤트 반환
-- `POST /v1/text`: 텍스트 테스트도 동일한 Context → Generator → Evaluator 파이프라인 사용
-- `GET /health`: 현재 LLM/STT 제공자와 모델 준비 상태 확인
+- `WS /v1/realtime`: 16 kHz mono Float32 PCM. 메시지 `start`(필수 `session_token`) → PCM → `ask`(선택) → `stop`
+- 서버 이벤트: `ready`, `status`, `transcript`, `context`, `pool_update`, `final_question`, `stopped`, `error`
+- **최종 질문**은 `final_question`만 사용합니다. `pool_update`는 후보 풀 크기/내부 상태용입니다.
+- `POST /v1/session`: 단회용 녹음 세션 토큰 발급
+- `POST /v1/text`: 텍스트 원샷 분석(즉시 생성·평가 후 diagnosis 반환)
+- `GET /health`: 현재 LLM/STT 제공자와 모델·세션 슬롯 상태 확인
 
-WebSocket 메시지 순서는 `start` → PCM binary frames → `stop`입니다. 서버는
-`ready`, `status`, `transcript`, `questions`, `stopped`, `error` 이벤트를 반환합니다.
-프런트 BFF의 기본 HTTP 주소는 `http://127.0.0.1:8765`, 브라우저 WebSocket
-주소는 `ws://127.0.0.1:8765/v1/realtime`입니다.
+녹음 시작 전 웹 BFF가 `/api/realtime/session`으로 토큰을 받아 `start.session_token`에
+넣습니다. `REALTIME_API_KEY`가 있으면 BFF가 Bearer로 HTTP를 인증합니다.
+
+WebSocket에서 `ask`를 보내면 침묵과 무관하게 활성 풀의 최고점 1문장을 `final_question`으로 보냅니다.
+침묵 임계는 `SILENCE_TRIGGER_SECONDS`(기본 **20**), 생성 최소 간격은
+`GENERATOR_MIN_INTERVAL_SECONDS`(기본 **25**, Context 버전 증가 시에만 실행)입니다.
 
 기본 DB는 `data/q-agent.db`입니다. 로컬 DB와 녹음 원본은 Git에 포함하지 않습니다.
 
@@ -138,7 +146,7 @@ OpenAI 모드에서는 실제 녹음을 시작하기 전에 API 키와 각 모�
 | 역할 | 기본 모델 | 주기 | thinking | temperature |
 | --- | --- | --- | --- | --- |
 | Context Updater | `qwen3:4b` | 5초 | off | 0.1 |
-| Question Generator (8개 배치) | `qwen3:8b` | 30초 | on | 0.5 |
+| Question Generator (5개 배치) | `qwen3:8b` | 30초 | on | 0.5 |
 | Question Evaluator | `qwen3:1.7b` | 후보 즉시 + 활성 질문 60초 | off | 0.0 |
 
 기본 컨텍스트 길이는 Context/Evaluator 4K, Generator 8K입니다. Ollama의 동시

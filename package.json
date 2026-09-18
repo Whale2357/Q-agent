@@ -2,22 +2,17 @@
   "name": "q-agent",
   "private": true,
   "version": "0.1.0",
-  "description": "Q-Agent monorepo — extract, engine, web",
+  "description": "Q-Agent monorepo — web + realtime",
   "workspaces": [
     "packages/*",
-    "services/*",
     "apps/*"
   ],
   "scripts": {
     "postinstall": "npm run build -w @q-agent/contracts",
     "dev": "npm run dev --workspaces --if-present",
-    "dev:extract": "npm run dev -w @q-agent/extract",
-    "dev:engine": "npm run dev -w @q-agent/engine",
     "dev:web": "npm run dev -w @q-agent/web",
     "build": "npm run build --workspaces --if-present",
     "build:contracts": "npm run build -w @q-agent/contracts",
-    "start:extract": "npm run start -w @q-agent/extract",
-    "start:engine": "npm run start -w @q-agent/engine",
     "start:web": "npm run start -w @q-agent/web",
     "smoke": "node scripts/smoke-test.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present"

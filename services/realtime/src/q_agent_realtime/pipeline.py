@@ -42,6 +42,7 @@ class MeetingPipeline:
         self.last_speech_at = time.monotonic()
         self.silence_question_emitted = False
         self.last_generated_context_version = 0
+        self.last_reeval_context_version = 0
         self.candidate_queue: asyncio.Queue[
             tuple[QuestionContextState, list[QuestionCandidate]]
         ] = asyncio.Queue()
@@ -211,10 +212,18 @@ class MeetingPipeline:
         if not active:
             return
         state_snapshot = await self._state_snapshot(include_history=True)
+        if (
+            state_snapshot.version == 0
+            or state_snapshot.version == self.last_reeval_context_version
+        ):
+            return
         try:
-            evaluated = await self.question_evaluator.evaluate(state_snapshot, active)
+            evaluated = await self.question_evaluator.evaluate(
+                state_snapshot, active, mode="reeval"
+            )
             select_top_questions(evaluated, self.config.max_active_questions)
             self.repository.save_questions(evaluated)
+            self.last_reeval_context_version = state_snapshot.version
             print(f"[evaluator] 활성 질문 {len(evaluated)}개 재평가")
         except ProviderError as error:
             print(f"[reevaluation:error] {error}")

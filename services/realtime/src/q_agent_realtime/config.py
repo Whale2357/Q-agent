@@ -21,7 +21,8 @@ class RuntimeConfig:
     speech_pad_ms: int = 200
     max_utterance_seconds: float = 30.0
     context_interval_seconds: float = 5.0
-    question_interval_seconds: float = 30.0
+    question_interval_seconds: float = 5.0
+    generator_min_interval_seconds: float = 25.0
     reevaluation_interval_seconds: float = 60.0
     silence_trigger_seconds: float = 20.0
     recent_transcript_seconds: float = 120.0
@@ -41,6 +42,9 @@ class RuntimeConfig:
     openai_generator_model: str = "gpt-4o-mini"
     openai_evaluator_model: str = "gpt-4o-mini"
     openai_stt_model: str = "gpt-4o-mini-transcribe"
+    api_key: str = ""
+    max_audio_sessions: int = 2
+    session_ttl_seconds: float = 120.0
 
     @classmethod
     def from_env(cls) -> "RuntimeConfig":
@@ -73,10 +77,16 @@ class RuntimeConfig:
                 os.getenv("CONTEXT_INTERVAL_SECONDS", "5")
             ),
             question_interval_seconds=float(
-                os.getenv("QUESTION_INTERVAL_SECONDS", "30")
+                os.getenv("QUESTION_INTERVAL_SECONDS", "5")
+            ),
+            generator_min_interval_seconds=float(
+                os.getenv("GENERATOR_MIN_INTERVAL_SECONDS", "25")
             ),
             reevaluation_interval_seconds=float(
                 os.getenv("REEVALUATION_INTERVAL_SECONDS", "60")
+            ),
+            silence_trigger_seconds=float(
+                os.getenv("SILENCE_TRIGGER_SECONDS", "20")
             ),
             context_model_window_tokens=int(
                 os.getenv("CONTEXT_NUM_CTX", "4096")
@@ -87,4 +97,7 @@ class RuntimeConfig:
             evaluator_model_window_tokens=int(
                 os.getenv("EVALUATOR_NUM_CTX", "4096")
             ),
+            api_key=os.getenv("REALTIME_API_KEY", ""),
+            max_audio_sessions=int(os.getenv("MAX_AUDIO_SESSIONS", "2")),
+            session_ttl_seconds=float(os.getenv("SESSION_TTL_SECONDS", "120")),
         )

@@ -38,8 +38,10 @@ class RoleConfigTest(unittest.TestCase):
         self.assertEqual(config.ollama_generator_model, "qwen3:8b")
         self.assertEqual(config.ollama_evaluator_model, "qwen3:1.7b")
         self.assertEqual(config.context_interval_seconds, 5)
-        self.assertEqual(config.question_interval_seconds, 30)
+        self.assertEqual(config.question_interval_seconds, 5)
+        self.assertEqual(config.generator_min_interval_seconds, 25)
         self.assertEqual(config.reevaluation_interval_seconds, 60)
+        self.assertEqual(config.silence_trigger_seconds, 20)
 
     def test_legacy_ollama_model_only_changes_generator(self) -> None:
         with patch.dict(os.environ, {"OLLAMA_MODEL": "qwen3:14b"}, clear=True):

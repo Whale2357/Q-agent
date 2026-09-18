@@ -5,13 +5,14 @@ import asyncio
 import copy
 import json
 import os
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -25,6 +26,7 @@ from .llm_roles import RoleLLMs, create_role_llms
 from .openai_provider import OpenAITranscriber
 from .providers import ProviderError, SpeechTranscriber
 from .questions import QuestionEvaluator, QuestionGenerator, select_top_questions
+from .session_gate import SessionGate
 from .transcriber import FasterWhisperTranscriber
 
 
@@ -34,6 +36,34 @@ EventSender = Callable[[dict[str, Any]], Awaitable[None]]
 class TextMeetingRequest(BaseModel):
     text: str
     language: str = "ko"
+
+
+def _unauthorized() -> JSONResponse:
+    return JSONResponse(
+        status_code=401,
+        content={
+            "ok": False,
+            "error": {
+                "code": "UNAUTHORIZED",
+                "message": "유효한 REALTIME_API_KEY Bearer 토큰이 필요합니다.",
+                "retryable": False,
+            },
+        },
+    )
+
+
+def _session_limit() -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={
+            "ok": False,
+            "error": {
+                "code": "SESSION_LIMIT",
+                "message": "동시 녹음 세션이 가득 찼습니다. 잠시 후 다시 시도해 주세요.",
+                "retryable": True,
+            },
+        },
+    )
 
 
 @dataclass(slots=True)
@@ -47,6 +77,11 @@ class RealtimeRuntime:
         self.config = config or RuntimeConfig.from_env()
         self.llms: RoleLLMs = create_role_llms(self.config)
         self.repository = Repository(self.config.database_path)
+        self.session_gate = SessionGate(
+            api_key=self.config.api_key,
+            max_audio_sessions=self.config.max_audio_sessions,
+            session_ttl_seconds=self.config.session_ttl_seconds,
+        )
         self.transcriber: SpeechTranscriber | None = None
         self._llm_ready = {role: False for role, _ in self.llms.items()}
         self._models_preloaded = False
@@ -96,12 +131,20 @@ class RealtimeRuntime:
 
 
 class RealtimeMeetingSession:
-    def __init__(self, runtime: RealtimeRuntime, send_event: EventSender, *, audio: bool):
+    def __init__(
+        self,
+        runtime: RealtimeRuntime,
+        send_event: EventSender,
+        *,
+        audio: bool,
+        holds_audio_slot: bool = False,
+    ):
         self.runtime = runtime
         self.config = runtime.config
         self.repository = runtime.repository
         self.send_event = send_event
         self.audio = audio
+        self._holds_audio_slot = holds_audio_slot
         self.meeting_id = self.repository.create_meeting()
         self.state = QuestionContextState(meeting_id=self.meeting_id)
         self.context_updater = ContextUpdater(runtime.llms.context)
@@ -123,8 +166,19 @@ class RealtimeMeetingSession:
         self._context_lock = asyncio.Lock()
         self._generation_lock = asyncio.Lock()
         self._evaluation_lock = asyncio.Lock()
-        self._utterance_queue: asyncio.Queue[AudioUtterance] = asyncio.Queue()
+        self._display_lock = asyncio.Lock()
+        self._utterance_queue: asyncio.Queue[AudioUtterance] = asyncio.Queue(maxsize=8)
         self._candidate_queue: asyncio.Queue[CandidateBatch] = asyncio.Queue()
+        self._transcript_dirty = asyncio.Event()
+        self._context_updated = asyncio.Event()
+        self._transcript_lines: list[str] = []
+        self._closed = False
+        self._last_diagnosis: dict[str, Any] | None = None
+        self._last_generated_context_version = 0
+        self._last_generate_at = 0.0
+        self._last_reeval_context_version = 0
+        self._last_speech_at = time.monotonic()
+        self._silence_question_emitted = False
         self._transcription_worker = (
             asyncio.create_task(
                 self._transcription_loop(), name=f"transcribe:{self.meeting_id}"
@@ -148,14 +202,13 @@ class RealtimeMeetingSession:
                     self._reevaluation_loop(),
                     name=f"active-evaluator:{self.meeting_id}",
                 ),
+                asyncio.create_task(
+                    self._silence_loop(), name=f"silence:{self.meeting_id}"
+                ),
             ]
             if audio
             else []
         )
-        self._closed = False
-        self._last_diagnosis: dict[str, Any] | None = None
-        self._last_generated_context_version = 0
-
     async def feed_pcm(self, payload: bytes) -> None:
         if not self.audio or self.detector is None or not payload:
             return
@@ -170,9 +223,28 @@ class RealtimeMeetingSession:
         while offset + frame_size <= len(combined):
             utterance = self.detector.push(combined[offset : offset + frame_size])
             offset += frame_size
+            if self.detector.active:
+                self._last_speech_at = time.monotonic()
+                self._silence_question_emitted = False
             if utterance is not None:
-                await self._utterance_queue.put(utterance)
+                self._last_speech_at = time.monotonic()
+                self._silence_question_emitted = False
+                await self._enqueue_utterance(utterance)
         self._pcm_remainder = combined[offset:].copy()
+
+    async def _enqueue_utterance(self, utterance: AudioUtterance) -> None:
+        try:
+            self._utterance_queue.put_nowait(utterance)
+        except asyncio.QueueFull:
+            try:
+                self._utterance_queue.get_nowait()
+                self._utterance_queue.task_done()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                self._utterance_queue.put_nowait(utterance)
+            except asyncio.QueueFull:
+                return
 
     async def flush_audio(self) -> None:
         if not self.audio or self.detector is None:
@@ -185,18 +257,64 @@ class RealtimeMeetingSession:
                 np.zeros(self.config.audio_block_size, dtype=np.float32)
             )
             if utterance is not None:
-                await self._utterance_queue.put(utterance)
+                await self._enqueue_utterance(utterance)
                 break
 
     async def finish_audio(self) -> None:
-        """Flush the final utterance and wait until transcript/question work is done."""
+        """Flush final audio; display existing pool immediately when possible."""
         await self.flush_audio()
         await self._utterance_queue.join()
+        if self.repository.best_eligible_question(self.meeting_id) is not None:
+            await self.display_best_question(trigger="stop")
+            return
         await self._update_context_once()
         batch = await self._generate_once(enqueue=False)
         if batch is not None:
             await self._evaluate_batch(batch)
         await self._candidate_queue.join()
+        await self.display_best_question(trigger="stop")
+
+    async def display_best_question(self, *, trigger: str) -> dict[str, Any] | None:
+        """Expose one final question on silence, user ask, or session stop."""
+        if (
+            trigger == "ask"
+            and self.repository.best_eligible_question(self.meeting_id) is None
+        ):
+            await self.run_immediate_analysis()
+
+        async with self._display_lock:
+            question = self.repository.best_eligible_question(self.meeting_id)
+            if question is None:
+                if trigger == "ask":
+                    diagnosis = self._diagnosis([], [])
+                    await self.send_event(
+                        {
+                            "type": "final_question",
+                            "meeting_id": self.meeting_id,
+                            "trigger": trigger,
+                            "transcript": self.transcript_text(),
+                            "diagnosis": diagnosis,
+                        }
+                    )
+                    return diagnosis
+                return None
+            self.repository.update_question_status(
+                question.id, QuestionStatus.DISPLAYED
+            )
+            diagnosis = self._diagnosis([question], [question])
+            self._last_diagnosis = diagnosis
+            if trigger == "silence":
+                self._silence_question_emitted = True
+            await self.send_event(
+                {
+                    "type": "final_question",
+                    "meeting_id": self.meeting_id,
+                    "trigger": trigger,
+                    "transcript": self.transcript_text(),
+                    "diagnosis": diagnosis,
+                }
+            )
+            return diagnosis
 
     async def add_text(self, text: str) -> dict[str, Any]:
         lines = [
@@ -214,6 +332,7 @@ class RealtimeMeetingSession:
                     text=line,
                 )
             )
+            self._transcript_lines.append(line)
             cursor_ms += 2_000
         return await self.run_immediate_analysis()
 
@@ -226,10 +345,15 @@ class RealtimeMeetingSession:
         if self.runtime.transcriber is None:
             raise RuntimeError("STT 제공자가 준비되지 않았습니다.")
         await self.send_event({"type": "status", "status": "extracting"})
-        async with self.runtime._transcription_lock:
+        if self.runtime.config.stt_provider == "local":
+            async with self.runtime._transcription_lock:
+                result = await self.runtime.transcriber.transcribe(samples)
+        else:
             result = await self.runtime.transcriber.transcribe(samples)
         if not result.text:
             return
+        self._last_speech_at = time.monotonic()
+        self._silence_question_emitted = False
         segment = self.repository.add_segment(
             TranscriptSegment(
                 meeting_id=self.meeting_id,
@@ -238,6 +362,8 @@ class RealtimeMeetingSession:
                 text=result.text,
             )
         )
+        self._transcript_lines.append(result.text)
+        self._transcript_dirty.set()
         await self.send_event(
             {
                 "type": "transcript",
@@ -263,15 +389,31 @@ class RealtimeMeetingSession:
 
     async def _context_loop(self) -> None:
         while True:
-            await asyncio.sleep(self.config.context_interval_seconds)
             try:
-                await self._update_context_once()
+                await asyncio.wait_for(
+                    self._transcript_dirty.wait(),
+                    timeout=self.config.context_interval_seconds,
+                )
+            except TimeoutError:
+                pass
+            self._transcript_dirty.clear()
+            try:
+                changed = await self._update_context_once()
+                if changed:
+                    self._context_updated.set()
             except Exception as error:
                 await self._send_agent_error("context", error)
 
     async def _question_loop(self) -> None:
         while True:
-            await asyncio.sleep(self.config.question_interval_seconds)
+            try:
+                await asyncio.wait_for(
+                    self._context_updated.wait(),
+                    timeout=self.config.question_interval_seconds,
+                )
+            except TimeoutError:
+                pass
+            self._context_updated.clear()
             try:
                 await self._generate_once(enqueue=True)
             except Exception as error:
@@ -290,10 +432,30 @@ class RealtimeMeetingSession:
     async def _reevaluation_loop(self) -> None:
         while True:
             await asyncio.sleep(self.config.reevaluation_interval_seconds)
+            async with self._state_lock:
+                version = self.state.version
+            if version == 0 or version == self._last_reeval_context_version:
+                continue
             try:
-                await self._reevaluate_active_questions()
+                result = await self._reevaluate_active_questions()
+                if result is not None:
+                    self._last_reeval_context_version = version
             except Exception as error:
                 await self._send_agent_error("evaluator", error)
+
+    async def _silence_loop(self) -> None:
+        while True:
+            await asyncio.sleep(0.5)
+            silent_for = time.monotonic() - self._last_speech_at
+            if (
+                silent_for >= self.config.silence_trigger_seconds
+                and not self._silence_question_emitted
+            ):
+                displayed = await self.display_best_question(trigger="silence")
+                # Consume this silence window even if the pool was empty.
+                self._silence_question_emitted = True
+                if displayed is None:
+                    pass
 
     async def run_immediate_analysis(self) -> dict[str, Any]:
         await self._update_context_once()
@@ -340,6 +502,7 @@ class RealtimeMeetingSession:
                     "purpose": updated.current_purpose,
                 }
             )
+            self._context_updated.set()
             return True
 
     async def _generate_once(self, *, enqueue: bool) -> CandidateBatch | None:
@@ -350,6 +513,13 @@ class RealtimeMeetingSession:
                 or state_snapshot.version <= self._last_generated_context_version
             ):
                 return None
+            now = time.monotonic()
+            if (
+                self._last_generate_at > 0
+                and now - self._last_generate_at
+                < self.config.generator_min_interval_seconds
+            ):
+                return None
             await self.send_event(
                 {"type": "status", "status": "generating", "agent": "generator"}
             )
@@ -358,6 +528,7 @@ class RealtimeMeetingSession:
             except ProviderError as error:
                 raise ProviderError(f"Question Generator 실패: {error}") from error
             self._last_generated_context_version = state_snapshot.version
+            self._last_generate_at = now
             batch = CandidateBatch(state=state_snapshot, candidates=candidates)
             if enqueue:
                 await self._candidate_queue.put(batch)
@@ -386,7 +557,7 @@ class RealtimeMeetingSession:
             ]
             diagnosis = self._diagnosis(evaluated, selected)
             self._last_diagnosis = diagnosis
-        await self._send_questions(diagnosis)
+        await self._send_pool_update(diagnosis)
         return diagnosis
 
     async def _reevaluate_active_questions(self) -> dict[str, Any] | None:
@@ -402,7 +573,7 @@ class RealtimeMeetingSession:
             )
             try:
                 evaluated = await self.question_evaluator.evaluate(
-                    state_snapshot, active
+                    state_snapshot, active, mode="reeval"
                 )
             except ProviderError as error:
                 raise ProviderError(f"Question Evaluator 실패: {error}") from error
@@ -415,7 +586,7 @@ class RealtimeMeetingSession:
             ]
             diagnosis = self._diagnosis(evaluated, selected)
             self._last_diagnosis = diagnosis
-        await self._send_questions(diagnosis)
+        await self._send_pool_update(diagnosis)
         return diagnosis
 
     async def _state_snapshot(
@@ -427,13 +598,15 @@ class RealtimeMeetingSession:
             snapshot.question_history = self.repository.question_history(self.meeting_id)
         return snapshot
 
-    async def _send_questions(self, diagnosis: dict[str, Any]) -> None:
+    async def _send_pool_update(self, diagnosis: dict[str, Any]) -> None:
+        """Background eligible pool — not the final on-screen question."""
         await self.send_event(
             {
-                "type": "questions",
+                "type": "pool_update",
                 "meeting_id": self.meeting_id,
                 "transcript": self.transcript_text(),
                 "diagnosis": diagnosis,
+                "pool_size": diagnosis.get("pipeline", {}).get("selected", 0),
             }
         )
 
@@ -443,9 +616,14 @@ class RealtimeMeetingSession:
         )
 
     def transcript_text(self) -> str:
-        return "\n".join(
-            segment.text for segment in self.repository.segments_after(self.meeting_id, 0)
-        )
+        if self._transcript_lines:
+            return "\n".join(self._transcript_lines)
+        lines = [
+            segment.text
+            for segment in self.repository.segments_after(self.meeting_id, 0)
+        ]
+        self._transcript_lines = lines
+        return "\n".join(lines)
 
     def _diagnosis(
         self,
@@ -518,6 +696,9 @@ class RealtimeMeetingSession:
         if workers:
             await asyncio.gather(*workers, return_exceptions=True)
         self.repository.end_meeting(self.meeting_id)
+        if self._holds_audio_slot:
+            self.runtime.session_gate.release_audio_slot()
+            self._holds_audio_slot = False
 
 
 runtime = RealtimeRuntime()
@@ -585,6 +766,9 @@ async def health() -> dict[str, Any]:
         "stt_loaded": runtime.transcriber is not None,
         "stt_ready": runtime._stt_ready,
         "stt_error": stt_error,
+        "auth_required": runtime.session_gate.auth_required,
+        "max_audio_sessions": runtime.config.max_audio_sessions,
+        "active_audio_sessions": runtime.session_gate.active_audio_sessions,
         # Backward-compatible diagnostics for existing local tooling.
         "ollama_ready": (
             all_llms_ready if runtime.llms.generator.provider == "ollama" else None
@@ -597,8 +781,31 @@ async def health() -> dict[str, Any]:
     }
 
 
+@app.post("/v1/session", response_model=None)
+async def create_session(
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any] | JSONResponse:
+    if not runtime.session_gate.check_api_key(authorization):
+        return _unauthorized()
+    if runtime.session_gate.active_audio_sessions >= runtime.config.max_audio_sessions:
+        return _session_limit()
+    ticket = runtime.session_gate.issue_ticket(kind="audio")
+    return {
+        "ok": True,
+        "token": ticket.token,
+        "expires_in": int(runtime.config.session_ttl_seconds),
+        "max_audio_sessions": runtime.config.max_audio_sessions,
+        "active_audio_sessions": runtime.session_gate.active_audio_sessions,
+    }
+
+
 @app.post("/v1/text", response_model=None)
-async def analyze_text(request: TextMeetingRequest) -> dict[str, Any] | JSONResponse:
+async def analyze_text(
+    request: TextMeetingRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any] | JSONResponse:
+    if not runtime.session_gate.check_api_key(authorization):
+        return _unauthorized()
     text = request.text.strip()
     if len(text) < 8:
         return JSONResponse(
@@ -694,9 +901,39 @@ async def realtime_socket(websocket: WebSocket) -> None:
                         }
                     )
                     continue
+                ticket = runtime.session_gate.consume_ticket(
+                    payload.get("session_token")
+                )
+                if ticket is None:
+                    await send_event(
+                        {
+                            "type": "error",
+                            "message": "유효한 녹음 세션 토큰이 필요합니다. 페이지를 새로고침한 뒤 다시 시작해 주세요.",
+                        }
+                    )
+                    await websocket.close(code=4401)
+                    return
+                if not runtime.session_gate.try_acquire_audio_slot():
+                    await send_event(
+                        {
+                            "type": "error",
+                            "message": "동시 녹음 세션이 가득 찼습니다. 잠시 후 다시 시도해 주세요.",
+                        }
+                    )
+                    await websocket.close(code=1013)
+                    return
                 await send_event({"type": "status", "status": "loading"})
-                await runtime.ensure_ready(audio=True)
-                session = RealtimeMeetingSession(runtime, send_event, audio=True)
+                try:
+                    await runtime.ensure_ready(audio=True)
+                    session = RealtimeMeetingSession(
+                        runtime,
+                        send_event,
+                        audio=True,
+                        holds_audio_slot=True,
+                    )
+                except Exception:
+                    runtime.session_gate.release_audio_slot()
+                    raise
                 await send_event(
                     {
                         "type": "ready",
@@ -704,6 +941,13 @@ async def realtime_socket(websocket: WebSocket) -> None:
                         "sample_rate": runtime.config.sample_rate,
                     }
                 )
+            elif event_type == "ask":
+                if session is None:
+                    await send_event(
+                        {"type": "error", "message": "회의가 시작되지 않았습니다."}
+                    )
+                    continue
+                await session.display_best_question(trigger="ask")
             elif event_type == "stop":
                 if session is not None:
                     await session.finish_audio()
@@ -716,6 +960,7 @@ async def realtime_socket(websocket: WebSocket) -> None:
                         }
                     )
                     await session.close()
+                    session = None
                 await websocket.close()
                 return
     except WebSocketDisconnect:

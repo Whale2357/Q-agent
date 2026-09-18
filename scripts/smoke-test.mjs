@@ -1,121 +1,108 @@
-#!/usr/bin/env node
 /**
- * Legacy smoke test: extract ↔ engine ↔ (optional) old web routes
- * Usage:
+ * Smoke test: web BFF ↔ realtime
+ *
  *   node scripts/smoke-test.mjs
  *   WEB_URL=http://localhost:3000 node scripts/smoke-test.mjs
  */
+const REALTIME_URL = process.env.REALTIME_SERVICE_URL || "http://127.0.0.1:8765";
+const WEB_URL = process.env.WEB_URL || "";
+const REALTIME_API_KEY = process.env.REALTIME_API_KEY || "";
 
-const EXTRACT_URL = process.env.EXTRACT_SERVICE_URL || "http://localhost:4001";
-const ENGINE_URL = process.env.ENGINE_SERVICE_URL || "http://localhost:4002";
-const WEB_URL = process.env.WEB_URL || "http://localhost:3000";
+const SAMPLE_TEXT = [
+  "오늘 회의에서는 Q-Agent 배포 범위를 확정하자.",
+  "웹은 realtime만 쓰고 레거시 extract/engine은 제거한다.",
+  "스모크 테스트는 health와 텍스트 진단만 검증한다.",
+].join("\n");
 
-const sampleText = `A: 나는 A안이 맞다고 봐. 비용이 중요해.
-B: 아니 B안이 더 빨라. 시장이 기다려 주지 않아.
-A: 그래도 예산이 없는데.
-B: 일단 B로 가자. 다들 동의하지?
-C: …음, 잘 모르겠어.`;
-
-function assert(cond, msg) {
-  if (!cond) throw new Error(msg);
+function authHeaders(extra = {}) {
+  const headers = { ...extra };
+  if (REALTIME_API_KEY) {
+    headers.Authorization = `Bearer ${REALTIME_API_KEY}`;
+  }
+  return headers;
 }
 
 async function getJson(url, init) {
   const res = await fetch(url, init);
-  const json = await res.json().catch(() => ({}));
+  let json = null;
+  try {
+    json = await res.json();
+  } catch {
+    json = null;
+  }
   return { res, json };
+}
+
+function assert(cond, message) {
+  if (!cond) throw new Error(message);
 }
 
 async function main() {
   const report = [];
 
-  // 1) health
-  {
-    const a = await getJson(`${EXTRACT_URL}/health`);
-    assert(a.res.ok && a.json.ok, `extract health failed: ${JSON.stringify(a.json)}`);
-    report.push("OK extract /health");
+  const health = await getJson(`${REALTIME_URL}/health`);
+  assert(
+    health.res.ok && health.json?.ok,
+    `realtime health failed: ${JSON.stringify(health.json)}`
+  );
+  report.push("OK realtime /health");
 
-    const b = await getJson(`${ENGINE_URL}/health`);
-    assert(b.res.ok && b.json.ok, `engine health failed: ${JSON.stringify(b.json)}`);
-    report.push("OK engine /health");
-  }
+  const session = await getJson(`${REALTIME_URL}/v1/session`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  assert(
+    session.res.ok && session.json?.ok && session.json?.token,
+    `realtime /v1/session failed: ${JSON.stringify(session.json)}`
+  );
+  report.push("OK realtime /v1/session");
 
-  // 2) extract text
-  let transcript;
-  {
-    const { res, json } = await getJson(`${EXTRACT_URL}/v1/extract`, {
+  const text = await getJson(`${REALTIME_URL}/v1/text`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ text: SAMPLE_TEXT, language: "ko" }),
+  });
+  assert(text.res.ok && text.json?.ok, `realtime /v1/text failed: ${JSON.stringify(text.json)}`);
+  assert(text.json.diagnosis, "realtime /v1/text missing diagnosis");
+  report.push("OK realtime /v1/text");
+
+  if (WEB_URL) {
+    const webHealth = await getJson(`${WEB_URL}/api/health`);
+    assert(
+      webHealth.res.ok && webHealth.json?.ok && webHealth.json?.upstream?.realtime?.ok,
+      `web /api/health failed: ${JSON.stringify(webHealth.json)}`
+    );
+    report.push("OK web /api/health → realtime");
+
+    const webSession = await getJson(`${WEB_URL}/api/realtime/session`, {
+      method: "POST",
+    });
+    assert(
+      webSession.res.ok && webSession.json?.ok && webSession.json?.token,
+      `web /api/realtime/session failed: ${JSON.stringify(webSession.json)}`
+    );
+    report.push("OK web BFF /api/realtime/session");
+
+    const webText = await getJson(`${WEB_URL}/api/realtime/text`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: sampleText, language: "ko" }),
+      body: JSON.stringify({ text: SAMPLE_TEXT, language: "ko" }),
     });
-    assert(res.ok && json.ok, `extract failed: ${JSON.stringify(json)}`);
-    assert(json.transcript?.text, "transcript.text missing");
-    assert(Array.isArray(json.transcript.segments), "segments missing");
-    transcript = json.transcript;
-    report.push(`OK extract /v1/extract (segments=${transcript.segments.length})`);
-  }
-
-  // 3) diagnose
-  {
-    const { res, json } = await getJson(`${ENGINE_URL}/v1/diagnose`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        transcript,
-        options: { max_questions: 3 },
-      }),
-    });
-    assert(res.ok && json.ok, `diagnose failed: ${JSON.stringify(json)}`);
-    assert(json.status === "done" || json.status === "rejected", "bad status");
-    assert(Array.isArray(json.questions), "questions missing");
     assert(
-      json.questions.every((question) => !question.text.includes("인가요일까요")),
-      "question contains a duplicated Korean ending"
+      webText.res.ok && webText.json?.ok,
+      `web /api/realtime/text failed: ${JSON.stringify(webText.json)}`
     );
-    assert(
-      json.questions.some((question) => question.text.includes("잘 모르겠어")),
-      "questions are not grounded in the latest transcript"
-    );
-    report.push(
-      `OK engine /v1/diagnose (status=${json.status}, n=${json.questions.length})`
-    );
-  }
-
-  // 4) optional web BFF
-  try {
-    const h = await getJson(`${WEB_URL}/api/health`);
-    if (h.res.ok && h.json.ok) {
-      report.push("OK web /api/health");
-
-      const ex = await getJson(`${WEB_URL}/api/extract`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: sampleText }),
-      });
-      assert(ex.json.ok, `web extract proxy failed: ${JSON.stringify(ex.json)}`);
-
-      const dg = await getJson(`${WEB_URL}/api/diagnose`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          transcript: ex.json.transcript,
-        }),
-      });
-      assert(dg.json.ok, `web diagnose proxy failed: ${JSON.stringify(dg.json)}`);
-      report.push("OK web BFF extract→diagnose orchestration path");
-    } else {
-      report.push("SKIP web (not reachable or upstream down) — services-only OK");
-    }
-  } catch {
-    report.push("SKIP web (not running) — services-only OK");
+    report.push("OK web BFF /api/realtime/text");
+  } else {
+    report.push("SKIP web BFF (set WEB_URL to include)");
   }
 
   console.log("\n=== Q-Agent smoke test PASSED ===");
-  for (const line of report) console.log(" -", line);
+  for (const line of report) console.log(` - ${line}`);
 }
 
 main().catch((err) => {
   console.error("\n=== Q-Agent smoke test FAILED ===");
-  console.error(err.message || err);
+  console.error(err instanceof Error ? err.message : err);
   process.exit(1);
 });

@@ -1,10 +1,14 @@
-# Q-Agent Kickoff — 3인 협업 / 1차 MVP
+# Q-Agent Kickoff — (역사) 3인 협업 / 1차 MVP
 
+> **ARCHIVE (2026-09-18)**  
+> 런타임은 **web → realtime** 입니다. `services/extract` / `services/engine` 은 제거되었습니다.  
+> 온보딩·배포는 [INFRASTRUCTURE.md](./INFRASTRUCTURE.md) / [README.md](../README.md)만 사용하세요.  
+> 아래 본문의 `/v1/extract`, `/v1/diagnose` 계약은 **폐기된 역사 스펙**입니다.
+>
 > **기준 문서:** `docs/최종_기획안.md`  
-> **인프라:** `docs/INFRASTRUCTURE.md`  
+> **인프라(현행):** `docs/INFRASTRUCTURE.md`  
 > **대회:** 원티드 AI Championship 2026  
-> **하드 데드라인:** 접수 09.18(금) / 제출 09.20(일) 23:59 (배포 URL 필수)  
-> **팀 구성:** 프론트 · 추출 AI · 생성+선발 (질문 엔진)
+> **팀 구성(당시):** 프론트 · 추출 AI · 생성+선발 (질문 엔진)
 
 이 문서는 **구현 시작 전 합의서**다.  
 각자 **자기 모듈 + 아래 공통 계약**만 지키면, 병렬로 개발해도 마지막에 붙는다.

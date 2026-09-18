@@ -57,7 +57,16 @@ interface RealtimeTextResponse {
 }
 
 interface RealtimeEvent {
-  type: "status" | "ready" | "transcript" | "context" | "questions" | "stopped" | "error";
+  type:
+    | "status"
+    | "ready"
+    | "transcript"
+    | "context"
+    | "questions"
+    | "pool_update"
+    | "final_question"
+    | "stopped"
+    | "error";
   status?: "loading" | PipelineStatus;
   agent?: "context" | "generator" | "evaluator";
   meeting_id?: string;
@@ -66,6 +75,8 @@ interface RealtimeEvent {
   message?: string;
   version?: number;
   topic?: string;
+  trigger?: "silence" | "ask" | "stop";
+  pool_size?: number;
 }
 
 type IconName =
@@ -123,6 +134,16 @@ function downsampleTo16Khz(input: Float32Array, inputRate: number) {
     output[outputIndex] = sum / Math.max(1, end - start);
   }
   return output;
+}
+
+function pcmRms(samples: Float32Array) {
+  if (samples.length === 0) return 0;
+  let sum = 0;
+  for (let index = 0; index < samples.length; index += 1) {
+    const value = samples[index] ?? 0;
+    sum += value * value;
+  }
+  return Math.sqrt(sum / samples.length);
 }
 
 function formatHistoryTime(value: string) {
@@ -205,6 +226,7 @@ export default function HomePage() {
   const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [realtimeReady, setRealtimeReady] = useState<boolean | null>(null);
+  const [poolSize, setPoolSize] = useState(0);
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const mediaStream = useRef<MediaStream | null>(null);
   const realtimeSocket = useRef<WebSocket | null>(null);
@@ -323,6 +345,7 @@ export default function HomePage() {
     realtimeStopped.current = false;
     recordingDurationValue.current = 0;
     recordingHistoryId.current = crypto.randomUUID();
+    setPoolSize(0);
 
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       setError("이 브라우저에서는 마이크 녹음을 지원하지 않습니다. 최신 Chrome 또는 Edge를 사용해 주세요.");
@@ -365,6 +388,8 @@ export default function HomePage() {
         const socket = realtimeSocket.current;
         if (!recordingActive.current || socket?.readyState !== WebSocket.OPEN) return;
         const pcm = downsampleTo16Khz(event.inputBuffer.getChannelData(0), context.sampleRate);
+        // Skip near-silent frames; server VAD remains the authority for utterance cuts.
+        if (pcmRms(pcm) < 0.008) return;
         socket.send(pcm.buffer);
       };
       source.connect(processor);
@@ -433,49 +458,80 @@ export default function HomePage() {
 
   function connectRealtimeSocket() {
     return new Promise<void>((resolve, reject) => {
-      const socket = new WebSocket(realtimeSocketUrl());
-      realtimeSocket.current = socket;
-      setStatus("extracting");
-      const timeout = setTimeout(() => {
-        socket.close();
-        reject(new Error("realtime 모델 준비 시간이 초과되었습니다."));
-      }, 180_000);
-
-      socket.onopen = () => socket.send(JSON.stringify({ type: "start", sample_rate: 16_000 }));
-      socket.onmessage = (message) => {
+      void (async () => {
+        let sessionToken = "";
         try {
-          const event = JSON.parse(String(message.data)) as RealtimeEvent;
-          handleRealtimeEvent(event);
-          if (event.type === "ready") {
-            clearTimeout(timeout);
-            resolve();
-          } else if (event.type === "error") {
-            clearTimeout(timeout);
-            reject(new Error(event.message ?? "realtime 서비스 오류"));
+          const sessionResponse = await fetch("/api/realtime/session", {
+            method: "POST",
+            cache: "no-store",
+          });
+          const sessionPayload = (await sessionResponse.json()) as {
+            ok?: boolean;
+            token?: string;
+            error?: { message?: string };
+          };
+          if (!sessionResponse.ok || !sessionPayload.ok || !sessionPayload.token) {
+            throw new Error(
+              sessionPayload.error?.message ?? "녹음 세션을 발급받지 못했습니다."
+            );
           }
-        } catch {
-          setError("realtime 응답을 해석하지 못했습니다.");
+          sessionToken = sessionPayload.token;
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error("녹음 세션 발급 실패"));
+          return;
         }
-      };
-      socket.onerror = () => {
-        clearTimeout(timeout);
-        reject(new Error("realtime 서비스에 연결할 수 없습니다. Python 서버를 확인해 주세요."));
-      };
-      socket.onclose = () => {
-        if (recordingActive.current) {
-          recordingActive.current = false;
-          cleanupAudioGraph();
-          setRecordingState("ready");
-          setStatus("error");
-          setError("realtime 연결이 예기치 않게 종료되었습니다.");
-        }
-      };
+
+        const socket = new WebSocket(realtimeSocketUrl());
+        realtimeSocket.current = socket;
+        setStatus("extracting");
+        const timeout = setTimeout(() => {
+          socket.close();
+          reject(new Error("realtime 모델 준비 시간이 초과되었습니다."));
+        }, 180_000);
+
+        socket.onopen = () =>
+          socket.send(
+            JSON.stringify({
+              type: "start",
+              sample_rate: 16_000,
+              session_token: sessionToken,
+            })
+          );
+        socket.onmessage = (message) => {
+          try {
+            const event = JSON.parse(String(message.data)) as RealtimeEvent;
+            handleRealtimeEvent(event);
+            if (event.type === "ready") {
+              clearTimeout(timeout);
+              resolve();
+            } else if (event.type === "error") {
+              clearTimeout(timeout);
+              reject(new Error(event.message ?? "realtime 서비스 오류"));
+            }
+          } catch {
+            setError("realtime 응답을 해석하지 못했습니다.");
+          }
+        };
+        socket.onerror = () => {
+          clearTimeout(timeout);
+          reject(new Error("realtime 서비스에 연결할 수 없습니다. Python 서버를 확인해 주세요."));
+        };
+        socket.onclose = () => {
+          if (recordingActive.current) {
+            recordingActive.current = false;
+            cleanupAudioGraph();
+            setRecordingState("ready");
+            setStatus("error");
+            setError("realtime 연결이 예기치 않게 종료되었습니다.");
+          }
+        };
+      })();
     });
   }
 
   function handleRealtimeEvent(event: RealtimeEvent) {
     if (event.type === "status" && event.status) {
-      setStatus(event.status === "loading" ? "extracting" : event.status);
+      if (event.status === "loading") setStatus("extracting");
       return;
     }
     if (event.type === "ready") {
@@ -487,7 +543,15 @@ export default function HomePage() {
       setLiveTranscript(event.transcript);
       return;
     }
-    if (event.type === "questions" && event.diagnosis) {
+    if (event.type === "pool_update") {
+      if (event.transcript !== undefined) {
+        liveTranscriptValue.current = event.transcript;
+        setLiveTranscript(event.transcript);
+      }
+      setPoolSize(event.pool_size ?? event.diagnosis?.pipeline.selected ?? 0);
+      return;
+    }
+    if ((event.type === "final_question" || event.type === "questions") && event.diagnosis) {
       latestDiagnosis.current = event.diagnosis;
       if (event.transcript !== undefined) {
         liveTranscriptValue.current = event.transcript;
@@ -516,6 +580,16 @@ export default function HomePage() {
       setStatus("error");
       setError(event.message ?? "realtime 처리 중 오류가 발생했습니다.");
     }
+  }
+
+  function askFinalQuestion() {
+    const socket = realtimeSocket.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      setError("realtime 연결이 없어 질문을 요청할 수 없습니다.");
+      return;
+    }
+    setError(null);
+    socket.send(JSON.stringify({ type: "ask" }));
   }
 
   async function persistCompletedRecording() {
@@ -716,14 +790,20 @@ export default function HomePage() {
                   )}
                   {recordingState === "recording" && (
                     <>
-                      <div className="recording-status"><span /><strong>회의를 듣고 질문을 만들고 있어요</strong></div>
+                      <div className="recording-status"><span /><strong>회의를 듣고 질문을 준비하고 있어요</strong></div>
                       <time>{formatDuration(recordingSeconds)}</time>
                       <div className="audio-wave" aria-hidden="true">{Array.from({ length: 18 }, (_, index) => <i key={index} />)}</div>
                       <div className="live-transcript" aria-live="polite">
-                        <small>Whisper 실시간 전사</small>
-                        <p>{liveTranscript || "말씀을 시작하면 Whisper가 확정한 발화가 여기에 표시됩니다."}</p>
+                        <small>실시간 전사 · 준비된 질문 {poolSize}개</small>
+                        <p>{liveTranscript || "말씀을 시작하면 확정된 발화가 여기에 표시됩니다."}</p>
                       </div>
-                      <button className="stop-recording" type="button" onClick={stopRecording}><Icon name="stop" />녹음 종료</button>
+                      <div className="recording-actions">
+                        <button className="diagnose-button" type="button" onClick={askFinalQuestion}>
+                          <span>지금 질문 요청</span><Icon name="spark" />
+                        </button>
+                        <button className="stop-recording" type="button" onClick={stopRecording}><Icon name="stop" />녹음 종료</button>
+                      </div>
+                      <p className="input-hint">침묵 20초가 되면 준비된 질문 한 문장이 자동으로 표시됩니다.</p>
                     </>
                   )}
                   {recordingState === "ready" && (
@@ -751,11 +831,14 @@ export default function HomePage() {
               </div>
               <Pipeline status={status} />
 
-              {status === "idle" && (
-                <div className="empty-result"><span className="empty-orbit"><Icon name="spark" /></span><strong>회의가 시작되면<br />필요한 순간에 질문이 나타납니다.</strong><p>왼쪽에서 녹음을 시작하거나 텍스트로 질문 생성을 테스트해 보세요.</p></div>
+              {status === "idle" && !result && (
+                <div className="empty-result"><span className="empty-orbit"><Icon name="spark" /></span><strong>회의가 시작되면<br />침묵·요청 순간에 질문이 나타납니다.</strong><p>녹음 중에는 후보를 모아 두고, 20초 침묵 또는 「지금 질문 요청」일 때만 한 문장을 보여줍니다.</p></div>
               )}
-              {isRunning && !result && (
+              {isRunning && !result && recordingState !== "recording" && (
                 <div className="analyzing-result"><div className="scan-line" /><p>{status === "extracting" ? "발화와 맥락을 정리하는 중" : status === "generating" ? "인지적 맹점에서 후보를 만드는 중" : "중복과 정보 가치를 평가하는 중"}</p><div className="skeleton-question" /><div className="skeleton-question short" /></div>
+              )}
+              {recordingState === "recording" && !result && (
+                <div className="empty-result"><span className="empty-orbit"><Icon name="spark" /></span><strong>후보를 준비하는 중</strong><p>준비된 질문 {poolSize}개. 침묵 20초 또는 질문 요청 시 최종 한 문장이 표시됩니다.</p></div>
               )}
               {error && status === "error" && (
                 <div className="error-result" role="alert"><strong>진단을 완료하지 못했습니다.</strong><p>{error}</p>{inputMode === "text" && <button type="button" onClick={runDiagnose}>다시 시도</button>}</div>

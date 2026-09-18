@@ -22,8 +22,12 @@ export type OperatorCode =
   | "constraint_relaxation";
 export type TranscriptSource = "text" | "audio";
 export type ErrorCode =
-  | "EXTRACT_FAILED"
   | "INVALID_INPUT"
+  | "UNAUTHORIZED"
+  | "SESSION_LIMIT"
+  | "LLM_UNAVAILABLE"
+  | "MODEL_REQUEST_FAILED"
+  | "REALTIME_UNAVAILABLE"
   | "LLM_TIMEOUT"
   | "INTERNAL";
 
@@ -46,16 +50,6 @@ export interface Transcript {
   };
 }
 
-export interface ExtractTextRequest {
-  text?: string;
-  language?: string;
-}
-
-export interface ExtractSuccessResponse {
-  ok: true;
-  transcript: Transcript;
-}
-
 export interface ErrorBody {
   code: ErrorCode;
   message: string;
@@ -65,20 +59,6 @@ export interface ErrorBody {
 export interface ErrorResponse {
   ok: false;
   error: ErrorBody;
-}
-
-export interface DiagnoseOptions {
-  max_questions?: number;
-  recent_turn_window?: number;
-  debug?: boolean;
-}
-
-export interface DiagnoseRequest {
-  transcript: Transcript;
-  /** Optional legacy hints. The engine infers purpose and uses its default tone when omitted. */
-  preset?: MeetingPreset;
-  tone?: ToneLevel;
-  options?: DiagnoseOptions;
 }
 
 export interface ScoreBreakdown {
@@ -106,7 +86,8 @@ export interface PipelineStats {
   selected: number;
 }
 
-export interface DiagnoseSuccessResponse {
+/** realtime `/v1/text` diagnosis and WS `final_question` payload */
+export interface DiagnosisSuccess {
   ok: true;
   status: "done" | "rejected";
   preset: MeetingPreset;
@@ -117,7 +98,21 @@ export interface DiagnoseSuccessResponse {
   pipeline: PipelineStats;
 }
 
-export type ExtractResponse = ExtractSuccessResponse | ErrorResponse;
-export type DiagnoseResponse = DiagnoseSuccessResponse | ErrorResponse;
+export type DiagnosisResponse = DiagnosisSuccess | ErrorResponse;
 
-export const CONTRACT_VERSION = "0.1.0";
+/** @deprecated Use DiagnosisSuccess */
+export type DiagnoseSuccessResponse = DiagnosisSuccess;
+/** @deprecated Use DiagnosisResponse */
+export type DiagnoseResponse = DiagnosisResponse;
+
+export interface RealtimeSessionSuccess {
+  ok: true;
+  token: string;
+  expires_in: number;
+  max_audio_sessions: number;
+  active_audio_sessions: number;
+}
+
+export type RealtimeSessionResponse = RealtimeSessionSuccess | ErrorResponse;
+
+export const CONTRACT_VERSION = "0.2.0";
