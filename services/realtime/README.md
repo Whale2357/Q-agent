@@ -47,6 +47,21 @@ q-agent-realtime --list-devices
 q-agent-realtime --device 1 --meeting-objective "Q-Agent 시스템 설계"
 ```
 
+Context/Generator/Evaluator 프롬프트는 기본적으로 다음 폴더의 Markdown 파일을
+읽습니다.
+
+```text
+C:\Users\xnejf\Documents\ChatGPT\회의 진행 Agent\prompts
+```
+
+다른 폴더를 사용하려면 `--prompt-dir` 또는 `Q_AGENT_PROMPT_DIR` 환경 변수를
+지정합니다. 실행 시 `_shared_v1.md`, `context_v1.md`, `evaluator_v1.md`,
+`generator_v1.md`, `purpose_guide_v1.md`가 모두 있는지 확인합니다.
+
+```powershell
+q-agent-realtime --prompt-dir "C:\path\to\prompts"
+```
+
 - 발화가 끝난 뒤 확정 transcript가 출력되고 SQLite에 저장됩니다.
 - Enter를 누르면 현재 최고 활성 질문을 요청합니다.
 - `q`를 입력하고 Enter를 누르면 회의를 종료합니다.

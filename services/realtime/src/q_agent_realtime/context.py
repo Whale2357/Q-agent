@@ -5,6 +5,7 @@ from typing import Any
 
 from .domain import DISCUSSION_KEYS, QuestionContextState, TranscriptSegment, utc_now
 from .ollama import OllamaClient
+from .prompts import PromptTemplates
 
 
 PURPOSES = (
@@ -68,8 +69,9 @@ CONTEXT_SCHEMA: dict[str, Any] = {
 
 
 class ContextUpdater:
-    def __init__(self, client: OllamaClient):
+    def __init__(self, client: OllamaClient, prompts: PromptTemplates):
         self.client = client
+        self.prompts = prompts
 
     async def update(
         self,
@@ -78,14 +80,6 @@ class ContextUpdater:
         recent_segments: list[TranscriptSegment],
         question_history: dict[str, list[dict[str, object]]],
     ) -> QuestionContextState:
-        system = """당신은 Q-Agent의 회의 맥락 갱신기다.
-이전 상태와 새 발화를 합쳐 질문 생성용 맥락을 한국어로 갱신한다.
-결론만 압축하지 말고 논의의 변화, 제안의 이유, 대안, 근거, 반론, 미해결 사항을 보존한다.
-새 발화가 기존 내용을 해결하거나 뒤집으면 항목을 삭제하지 말고 status를 resolved 또는 superseded로 바꾼다.
-발화에 없는 사실, 감정, 합의, 발화자 의도를 추측하지 않는다.
-모든 구조화 항목에는 실제 근거 segment id만 연결한다.
-현재 1~2분의 활동을 기준으로 current_purpose를 판단한다.
-JSON 스키마에 맞는 객체만 반환한다. /no_think"""
         user = json.dumps(
             {
                 "meeting_objective": state.meeting_objective,
@@ -103,7 +97,7 @@ JSON 스키마에 맞는 객체만 반환한다. /no_think"""
             ensure_ascii=False,
         )
         result = await self.client.chat_json(
-            system=system,
+            system=self.prompts.context,
             user=user,
             schema=CONTEXT_SCHEMA,
             think=False,

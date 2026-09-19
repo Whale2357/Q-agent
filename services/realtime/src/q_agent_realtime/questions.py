@@ -14,6 +14,7 @@ from .domain import (
     utc_now,
 )
 from .ollama import OllamaClient
+from .prompts import PromptTemplates
 
 
 GENERATOR_SCHEMA: dict[str, Any] = {
@@ -106,39 +107,15 @@ EVALUATOR_SCHEMA: dict[str, Any] = {
 }
 
 
-PURPOSE_GUIDE = """
-progress_coordination: Team Reflexivity로 병목과 계획 관성을 점검
-idea_exploration: Representational Change로 제약 완화와 탐색 공간 확장
-decision_making: Inquiry와 Constructive Controversy로 기준·대안·증거 검증
-problem_solving: Double-loop Learning과 Reframing으로 원인·문제 정의 재검토
-planning_strategy: Team Reflexivity와 Pre-mortem으로 목표·전제·위험 검증
-performance_review: Team Learning과 Double-loop Learning으로 예상-실제 차이 학습
-alignment: Constructive Controversy와 Psychological Safety로 관점 차이를 안전하게 표면화
-""".strip()
-
-
 class QuestionGenerator:
-    def __init__(self, client: OllamaClient):
+    def __init__(self, client: OllamaClient, prompts: PromptTemplates):
         self.client = client
+        self.prompts = prompts
 
     async def generate(self, state: QuestionContextState) -> list[QuestionCandidate]:
-        system = f"""당신은 Q-Agent의 질문 생성기다.
-질문은 회의 흐름을 방해하는 장식이 아니라 실제 병목을 해소하는 개입이어야 한다.
-먼저 현재 회의 목적과 문제 신호를 판단한 뒤 정확히 8개의 서로 다른 후보를 만든다.
-category는 blind_spot, essence, expansion을 각각 최소 1개 포함한다.
-operator는 assumption_challenge, reframing, criterion_clarification,
-counterfactual, constraint_relaxation을 각각 최소 1개 포함한다.
-근거가 없거나 이미 답이 나온 질문, 일반론, 특정인을 공격하는 질문은 만들지 않는다.
-말하지 않은 사람의 감정이나 반대를 단정하지 말고 안전한 초대형 질문으로 표현한다.
-각 후보는 recent_transcript의 실제 segment id를 하나 이상 근거로 가져야 한다.
-
-목적별 이론 가이드:
-{PURPOSE_GUIDE}
-
-JSON 스키마에 맞는 객체만 반환한다."""
         user = json.dumps(state.to_dict(), ensure_ascii=False)
         result = await self.client.chat_json(
-            system=system,
+            system=self.prompts.generator,
             user=user,
             schema=GENERATOR_SCHEMA,
             think=True,
@@ -183,8 +160,9 @@ JSON 스키마에 맞는 객체만 반환한다."""
 
 
 class QuestionEvaluator:
-    def __init__(self, client: OllamaClient):
+    def __init__(self, client: OllamaClient, prompts: PromptTemplates):
         self.client = client
+        self.prompts = prompts
 
     async def evaluate(
         self,
@@ -193,15 +171,6 @@ class QuestionEvaluator:
     ) -> list[QuestionCandidate]:
         if not questions:
             return []
-        system = """당신은 Q-Agent의 엄격한 질문 평가기다.
-최신 Question Context State에서 질문의 현재 가치를 평가한다.
-먼저 관련성, 원문 근거, 이미 해결됨, 사회적 안전성을 사실대로 판정한다.
-그 다음 PDF 핵심 기준인 정보 이득, 비중복성, 암묵적 가정 노출을 각각 0~3점으로 평가한다.
-정보 이득은 답이 실제 결정이나 다음 행동을 바꿀 가능성이다.
-비중복성은 기존 논의와 질문 이력에 같은 답이 없는 정도다.
-가정 노출은 검증되지 않은 전제를 드러내는 정도다.
-현재 주제가 바뀌었으면 topic_changed, 대화에서 답이 나왔으면 resolved로 표시한다.
-JSON 스키마에 맞는 객체만 반환한다. /no_think"""
         user = json.dumps(
             {
                 "question_context_state": state.to_dict(),
@@ -210,7 +179,7 @@ JSON 스키마에 맞는 객체만 반환한다. /no_think"""
             ensure_ascii=False,
         )
         result = await self.client.chat_json(
-            system=system,
+            system=self.prompts.evaluator,
             user=user,
             schema=EVALUATOR_SCHEMA,
             think=False,

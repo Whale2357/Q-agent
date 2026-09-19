@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
+
+
+DEFAULT_PROMPT_DIR = Path(
+    os.environ.get(
+        "Q_AGENT_PROMPT_DIR",
+        r"C:\Users\xnejf\Documents\ChatGPT\회의 진행 Agent\prompts",
+    )
+)
 
 
 @dataclass(slots=True)
@@ -25,3 +34,4 @@ class RuntimeConfig:
     context_window_tokens: int = 8192
     meeting_objective: str = ""
     microphone_device: int | str | None = None
+    prompt_dir: Path = DEFAULT_PROMPT_DIR

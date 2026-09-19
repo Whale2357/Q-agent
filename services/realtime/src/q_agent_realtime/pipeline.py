@@ -11,6 +11,7 @@ from .context import ContextUpdater
 from .database import Repository
 from .domain import QuestionContextState, QuestionStatus, TranscriptSegment
 from .ollama import OllamaClient, OllamaError
+from .prompts import PromptTemplates
 from .questions import QuestionEvaluator, QuestionGenerator, select_top_questions
 from .transcriber import FasterWhisperTranscriber
 
@@ -22,14 +23,16 @@ class MeetingPipeline:
         repository: Repository,
         ollama: OllamaClient,
         transcriber: FasterWhisperTranscriber,
+        prompts: PromptTemplates,
     ):
         self.config = config
         self.repository = repository
         self.ollama = ollama
         self.transcriber = transcriber
-        self.context_updater = ContextUpdater(ollama)
-        self.question_generator = QuestionGenerator(ollama)
-        self.question_evaluator = QuestionEvaluator(ollama)
+        self.prompts = prompts
+        self.context_updater = ContextUpdater(ollama, self.prompts)
+        self.question_generator = QuestionGenerator(ollama, self.prompts)
+        self.question_evaluator = QuestionEvaluator(ollama, self.prompts)
         self.stop_event = asyncio.Event()
         self.state_lock = asyncio.Lock()
         self.meeting_id = ""
@@ -40,6 +43,7 @@ class MeetingPipeline:
 
     async def run(self) -> None:
         await self.ollama.ensure_ready()
+        print(f"[prompts] {self.prompts.directory}")
         self.meeting_id = self.repository.create_meeting(self.config.meeting_objective)
         self.state = QuestionContextState(
             meeting_id=self.meeting_id,
