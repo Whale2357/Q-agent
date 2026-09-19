@@ -1051,8 +1051,8 @@ export default function HomePage() {
         >
           <Icon name="history" />
         </button>
-        <a className="brand" href="/" aria-label="프랑켄슈타인 홈">
-          <span className="brand-mark"><BrainLogoIcon /></span><span>프랑켄슈타인</span>
+        <a className="brand" href="/" aria-label="STEIN 홈">
+          <span className="brand-mark"><BrainLogoIcon /></span><span className="brand-name">STEIN</span>
         </a>
         <span className="brand-subtitle">회의를 녹음하면 맥락을 실시간으로 읽고 후보 질문을 생성·평가해, 기준을 넘은 질문만 건넵니다.</span>
       </header>
