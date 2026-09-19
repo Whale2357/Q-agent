@@ -39,6 +39,7 @@ interface ThoughtQuestion {
   id: string;
   text: string;
   createdAt: number;
+  slot: number;
 }
 
 interface RealtimeEvent {
@@ -230,10 +231,20 @@ export default function HomePage() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyReady, setHistoryReady] = useState(false);
   const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [realtimeReady, setRealtimeReady] = useState<boolean | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const nextThoughtSlot = useRef(0);
   const [retrying, setRetrying] = useState(false);
   const [isEmittingQuestion, setIsEmittingQuestion] = useState(false);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 1000px)");
+    const sync = () => {
+      if (media.matches) setSidebarOpen(false);
+    };
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
 
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const mediaStream = useRef<MediaStream | null>(null);
@@ -278,20 +289,17 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/health", { cache: "no-store" })
-      .then((response) => response.json())
-      .then((payload) => setRealtimeReady(Boolean(payload?.ok)))
-      .catch(() => setRealtimeReady(false));
-  }, []);
-
-  useEffect(() => {
     if (!historyReady) return;
     localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history));
   }, [history, historyReady]);
 
   useEffect(() => {
     if (thoughts.length <= MAX_VISIBLE_THOUGHTS) return;
-    const overflowIds = thoughts.slice(0, thoughts.length - MAX_VISIBLE_THOUGHTS).map((thought) => thought.id);
+    const overflowIds = thoughts
+      .slice()
+      .sort((left, right) => left.createdAt - right.createdAt)
+      .slice(0, thoughts.length - MAX_VISIBLE_THOUGHTS)
+      .map((thought) => thought.id);
     setDismissingIds((previous) => new Set([...previous, ...overflowIds]));
     const timer = setTimeout(() => {
       setThoughts((previous) => previous.filter((thought) => !overflowIds.includes(thought.id)));
@@ -370,6 +378,7 @@ export default function HomePage() {
     setDismissingIds(new Set());
     setIsEmittingQuestion(false);
     knownQuestionIds.current = new Set();
+    nextThoughtSlot.current = 0;
     if (questionBurstTimer.current) clearTimeout(questionBurstTimer.current);
     clearWorkspaceMessage();
     setActiveHistoryId(null);
@@ -389,18 +398,34 @@ export default function HomePage() {
     recordingDurationValue.current = 0;
   }
 
+  function allocateThoughtSlot(occupied: Set<number>) {
+    for (let slot = 0; slot < MAX_VISIBLE_THOUGHTS; slot += 1) {
+      if (!occupied.has(slot)) return slot;
+    }
+    const slot = nextThoughtSlot.current % MAX_VISIBLE_THOUGHTS;
+    nextThoughtSlot.current += 1;
+    return slot;
+  }
+
   function addQuestions(questions: ScoredQuestion[]) {
     if (questions.length === 0) return;
-    const additions = questions
-      .filter((question) => !knownQuestionIds.current.has(question.id))
-      .map((question, index) => ({
-        id: question.id,
-        text: question.text,
-        createdAt: Date.now() + index,
-      }));
-    if (additions.length === 0) return;
-    additions.forEach((question) => knownQuestionIds.current.add(question.id));
-    setThoughts((previous) => [...previous, ...additions].sort((left, right) => left.createdAt - right.createdAt));
+    const fresh = questions.filter((question) => !knownQuestionIds.current.has(question.id));
+    if (fresh.length === 0) return;
+    fresh.forEach((question) => knownQuestionIds.current.add(question.id));
+    setThoughts((previous) => {
+      const occupied = new Set(previous.map((thought) => thought.slot));
+      const additions = fresh.map((question, index) => {
+        const slot = allocateThoughtSlot(occupied);
+        occupied.add(slot);
+        return {
+          id: question.id,
+          text: question.text,
+          createdAt: Date.now() + index,
+          slot,
+        };
+      });
+      return [...previous, ...additions];
+    });
     setIsEmittingQuestion(true);
     if (questionBurstTimer.current) clearTimeout(questionBurstTimer.current);
     questionBurstTimer.current = setTimeout(() => {
@@ -940,21 +965,38 @@ export default function HomePage() {
     setActivity("idle");
   }
 
+  function askFromBrain() {
+    if (activity !== "recording") return;
+    const socket = realtimeSocket.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      setWorkspaceMessage("network", "녹음 연결이 아직 준비되지 않았습니다. 잠시 후 다시 눌러 주세요.");
+      return;
+    }
+    setIsEmittingQuestion(true);
+    if (questionBurstTimer.current) clearTimeout(questionBurstTimer.current);
+    questionBurstTimer.current = setTimeout(() => {
+      setIsEmittingQuestion(false);
+      questionBurstTimer.current = null;
+    }, 1400);
+    socket.send(JSON.stringify({ type: "ask" }));
+  }
+
   function startNewMeeting() {
     if (activity === "recording") {
       discardSession.current = true;
       stopRecording();
     }
     setThoughts([]);
+    setDismissingIds(new Set());
     setIsEmittingQuestion(false);
     knownQuestionIds.current = new Set();
+    nextThoughtSlot.current = 0;
     if (questionBurstTimer.current) clearTimeout(questionBurstTimer.current);
     setSelectedFile(null);
     setRecordingSeconds(0);
     clearWorkspaceMessage();
     setActivity("idle");
     setActiveHistoryId(null);
-    setSidebarOpen(false);
   }
 
   function openHistory(item: HistoryItem) {
@@ -962,10 +1004,12 @@ export default function HomePage() {
     knownQuestionIds.current = new Set((item.result?.questions ?? []).map((question) => question.id));
     setIsEmittingQuestion(false);
     if (questionBurstTimer.current) clearTimeout(questionBurstTimer.current);
-    setThoughts((item.result?.questions ?? []).map((question, index) => ({
+    nextThoughtSlot.current = 0;
+    setThoughts((item.result?.questions ?? []).slice(0, MAX_VISIBLE_THOUGHTS).map((question, index) => ({
       id: question.id,
       text: question.text,
       createdAt: index,
+      slot: index,
     })));
     setMode(item.source === "upload" || item.source === "text" ? "upload" : "record");
     setRecordingSeconds(item.durationSeconds ?? 0);
@@ -995,15 +1039,22 @@ export default function HomePage() {
       <div className="ambient-light ambient-light-one" aria-hidden="true" />
       <div className="ambient-light ambient-light-two" aria-hidden="true" />
       <header className="topbar">
-        <button className="mobile-history-button" type="button" aria-label="기록 열기" onClick={() => setSidebarOpen(true)}><Icon name="history" /></button>
+        <button
+          className="sidebar-toggle"
+          type="button"
+          aria-label={sidebarOpen ? "기록 닫기" : "기록 열기"}
+          aria-pressed={sidebarOpen}
+          onClick={() => setSidebarOpen((open) => !open)}
+        >
+          <Icon name="history" />
+        </button>
         <a className="brand" href="/" aria-label="프랑켄슈타인 홈">
           <span className="brand-mark"><BrainLogoIcon /></span><span>프랑켄슈타인</span>
         </a>
         <span className="brand-subtitle">회의를 녹음하면 맥락을 실시간으로 읽고 후보 질문을 생성·평가해, 기준을 넘은 질문만 건넵니다.</span>
-        <div className={`service-state${realtimeReady === false ? " offline" : ""}`}><span aria-hidden="true" />{realtimeReady === null ? "realtime 확인 중" : realtimeReady ? "realtime 연결됨" : "realtime 연결 필요"}</div>
       </header>
 
-      <div className="app-layout">
+      <div className={`app-layout${sidebarOpen ? "" : " sidebar-collapsed"}`}>
         <button className={`sidebar-scrim${sidebarOpen ? " open" : ""}`} type="button" aria-label="기록 닫기" onClick={() => setSidebarOpen(false)} />
         <aside className={`history-sidebar${sidebarOpen ? " open" : ""}`} aria-label="이전 회의 기록">
           <div className="history-heading">
@@ -1037,11 +1088,11 @@ export default function HomePage() {
           </div>
 
           <div className={`thought-stage${activity === "recording" ? " is-listening" : ""}${isEmittingQuestion ? " is-emitting-question" : ""}`} aria-live="polite">
-            {thoughts.map((thought, index) => (
+            {thoughts.map((thought) => (
               <button
                 key={thought.id}
-                className={`thought-bubble slot-${index % MAX_VISIBLE_THOUGHTS}${dismissingIds.has(thought.id) ? " is-dismissing" : ""}`}
-                data-side={index % 2 === 0 ? "left" : "right"}
+                className={`thought-bubble slot-${thought.slot}${dismissingIds.has(thought.id) ? " is-dismissing" : ""}`}
+                data-side={thought.slot % 2 === 0 ? "left" : "right"}
                 type="button"
                 title="해결된 질문으로 표시하고 지우기"
                 onClick={() => dismissThought(thought.id)}
@@ -1052,7 +1103,16 @@ export default function HomePage() {
             ))}
 
             <div className="brain-center">
-              <div className="brain-core"><BrainIcon /></div>
+              <button
+                type="button"
+                className={`brain-core${activity === "recording" ? " is-clickable" : ""}`}
+                disabled={activity !== "recording"}
+                aria-label={activity === "recording" ? "지금 질문 받기" : "녹음 중일 때 클릭하면 질문이 나옵니다"}
+                title={activity === "recording" ? "클릭하면 질문을 요청합니다" : undefined}
+                onClick={askFromBrain}
+              >
+                <BrainIcon />
+              </button>
               {activity === "recording" && <time>{formatDuration(recordingSeconds)}</time>}
             </div>
           </div>
@@ -1094,7 +1154,11 @@ export default function HomePage() {
                   <Icon name={activity === "recording" ? "stop" : "mic"} />
                   <span>{activity === "recording" ? "녹음 종료" : activity === "error" ? "다시 녹음" : activity === "done" ? "새 녹음 시작" : "녹음 시작"}</span>
                 </button>
-                <p>{activity === "recording" ? "회의를 들으며 질문을 계속 생성합니다." : "마이크 권한을 허용하면 실시간으로 회의를 분석합니다."}</p>
+                <p>
+                  {activity === "recording"
+                    ? "침묵이 길어지거나 뇌를 클릭하면 질문이 나옵니다."
+                    : "마이크 권한을 허용하면 실시간으로 회의를 분석합니다."}
+                </p>
               </div>
             )}
             {error && (

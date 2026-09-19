@@ -223,9 +223,9 @@ class RealtimeMeetingSession:
         while offset + frame_size <= len(combined):
             utterance = self.detector.push(combined[offset : offset + frame_size])
             offset += frame_size
-            if self.detector.active:
-                self._last_speech_at = time.monotonic()
-                self._silence_question_emitted = False
+            # Only utterance boundaries reset silence — not VAD `active`.
+            # Ambient noise can keep the detector active and otherwise
+            # prevent silence-triggered questions forever.
             if utterance is not None:
                 self._last_speech_at = time.monotonic()
                 self._silence_question_emitted = False
@@ -452,10 +452,15 @@ class RealtimeMeetingSession:
                 and not self._silence_question_emitted
             ):
                 displayed = await self.display_best_question(trigger="silence")
-                # Consume this silence window even if the pool was empty.
-                self._silence_question_emitted = True
-                if displayed is None:
-                    pass
+                if displayed is not None:
+                    self._silence_question_emitted = True
+                else:
+                    # Pool empty: backoff so we retry after more context accumulates
+                    # instead of consuming the silence window forever.
+                    self._last_speech_at = (
+                        time.monotonic()
+                        - (self.config.silence_trigger_seconds / 2)
+                    )
 
     async def run_immediate_analysis(self) -> dict[str, Any]:
         await self._update_context_once()

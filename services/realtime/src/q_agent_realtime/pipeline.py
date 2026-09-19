@@ -107,11 +107,10 @@ class MeetingPipeline:
         )
         async for frame in microphone.frames():
             utterance = detector.push(frame)
-            if detector.active:
-                self.last_speech_at = time.monotonic()
-                self.silence_question_emitted = False
             if utterance is None:
                 continue
+            self.last_speech_at = time.monotonic()
+            self.silence_question_emitted = False
             try:
                 result = await self.transcriber.transcribe(utterance.samples)
             except Exception as error:
