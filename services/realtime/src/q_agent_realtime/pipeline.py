@@ -42,10 +42,11 @@ class MeetingPipeline:
         self.last_speech_at = time.monotonic()
         self.silence_question_emitted = False
         self.last_generated_context_version = 0
+        self.last_generated_at = 0.0
         self.last_reeval_context_version = 0
         self.candidate_queue: asyncio.Queue[
             tuple[QuestionContextState, list[QuestionCandidate]]
-        ] = asyncio.Queue()
+        ] = asyncio.Queue(maxsize=2)
 
     async def run(self) -> None:
         await self.llms.ensure_ready()
@@ -168,12 +169,17 @@ class MeetingPipeline:
             state_snapshot = await self._state_snapshot(include_history=True)
             if (
                 state_snapshot.version == 0
-                or state_snapshot.version == self.last_generated_context_version
+                or state_snapshot.version <= self.last_generated_context_version
+                or time.monotonic() - self.last_generated_at < self.config.generator_min_interval_seconds
             ):
                 continue
             try:
                 candidates = await self.question_generator.generate(state_snapshot)
                 self.last_generated_context_version = state_snapshot.version
+                self.last_generated_at = time.monotonic()
+                if self.candidate_queue.full():
+                    self.candidate_queue.get_nowait()
+                    self.candidate_queue.task_done()
                 await self.candidate_queue.put((state_snapshot, candidates))
                 print(f"[generator] v{state_snapshot.version} 후보 {len(candidates)}개")
             except ProviderError as error:
@@ -188,10 +194,13 @@ class MeetingPipeline:
                     state_snapshot, candidates
                 )
                 select_top_questions(evaluated, self.config.max_active_questions)
+                if (await self._state_snapshot()).version != state_snapshot.version:
+                    continue
                 self.repository.expire_eligible_questions_before(
                     self.meeting_id, state_snapshot.version
                 )
                 self.repository.save_questions(evaluated)
+                self.last_reeval_context_version = state_snapshot.version
                 eligible = sum(q.status is QuestionStatus.ELIGIBLE for q in evaluated)
                 print(f"[evaluator] 후보 {len(evaluated)}개 / 활성 {eligible}개")
             except ProviderError as error:
@@ -221,6 +230,8 @@ class MeetingPipeline:
                 state_snapshot, active, mode="reeval"
             )
             select_top_questions(evaluated, self.config.max_active_questions)
+            if (await self._state_snapshot()).version != state_snapshot.version:
+                return
             self.repository.save_questions(evaluated)
             self.last_reeval_context_version = state_snapshot.version
             print(f"[evaluator] 활성 질문 {len(evaluated)}개 재평가")
@@ -235,6 +246,7 @@ class MeetingPipeline:
                 silent_for >= self.config.silence_trigger_seconds
                 and not self.silence_question_emitted
             ):
+                await self._reevaluate_active()
                 displayed = self._display_best_question()
                 if displayed:
                     self.silence_question_emitted = True
@@ -249,11 +261,14 @@ class MeetingPipeline:
             if command.strip().lower() == "q":
                 self.stop_event.set()
                 return
+            await self._reevaluate_active()
             self._display_best_question()
 
     def _display_best_question(self) -> bool:
         question = self.repository.best_eligible_question(self.meeting_id)
         if question is None:
+            return False
+        if self.state is None or self.last_reeval_context_version != self.state.version:
             return False
         print(f"\n{question.text}\n")
         self.repository.update_question_status(question.id, QuestionStatus.DISPLAYED)

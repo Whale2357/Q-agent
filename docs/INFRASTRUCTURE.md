@@ -1,6 +1,8 @@
 # Q-Agent 인프라 · 레포 구조 · 통신 검증
 
-> 업데이트: 2026-09-18 — **web → realtime** 단일 경로 + Docker 이미지·세션 게이트.
+> 업데이트: 2026-09-19 — **web → realtime** 단일 경로. 실제 배포 순서와
+> 운영 제한은 [DEPLOYMENT.md](DEPLOYMENT.md), 검증 결과는
+> [PREDEPLOY_REVIEW.md](PREDEPLOY_REVIEW.md)를 우선 참고하세요.
 
 ---
 
@@ -73,6 +75,12 @@ REALTIME_API_KEY=long-random-secret
 | `POST /v1/session` | 단회용 `session_token` 발급 (TTL `SESSION_TTL_SECONDS`) |
 | WS `start.session_token` | 티켓 소비 후 오디오 슬롯 획득 |
 | `MAX_AUDIO_SESSIONS` | 동시 녹음 상한(기본 2). 초과 시 503 / WS error |
+| `MAX_TEXT_SESSIONS` | 동시 텍스트 분석 상한(기본 2) |
+| `MAX_PENDING_TICKETS` | 미사용 티켓 최대 128개 |
+| `REALTIME_MAX_SESSION_SECONDS` | 최대 녹음 세션 시간(기본 7200초) |
+| `REALTIME_REQUEST_TIMEOUT_SECONDS` | 분석/종료 제한 시간(기본 180초) |
+
+현재 티켓·슬롯은 서버 메모리에 있으므로 **1 worker / 1 replica**가 필수입니다.
 
 ---
 
@@ -94,7 +102,7 @@ WEB_URL=http://localhost:3000 npm run smoke
 
 ## 5. 배포 체크리스트
 
-- [ ] realtime 이미지 배포 + `/health` 200
+- [ ] realtime 이미지 배포 + `/health` JSON `ok: true` 확인 (HTTP 200만으로 판단 금지)
 - [ ] `CORS_ORIGIN` = 실제 web origin
 - [ ] Vercel `REALTIME_SERVICE_URL` + `NEXT_PUBLIC_REALTIME_WS_URL`(wss) + `REALTIME_API_KEY`
 - [ ] 텍스트 E2E: `/api/realtime/text`

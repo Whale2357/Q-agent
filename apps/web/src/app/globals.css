@@ -422,7 +422,11 @@ legend strong { float: right; color: var(--ink); font-weight: 500; }
   .thought-bubble { width: clamp(170px, 23vw, 235px); }
 }
 
-@media (max-width: 760px) {
+/* Match the sidebar's breakpoint: auto-height parents cannot size the desktop
+   flex stage. Flow the question cards above the controls on narrow/short screens. */
+@media (max-width: 1000px), (max-height: 620px) {
+  .site-shell { height: auto; min-height: 100dvh; overflow: visible; }
+  .app-layout { height: auto; min-height: calc(100dvh - 82px); }
   .brain-workspace { height: auto; min-height: calc(100dvh - 86px); padding: 18px 0 20px; overflow: visible; }
   .mode-switch { width: min(100%, 390px); }
   .thought-stage { height: auto; min-height: 360px; margin-top: 16px; padding-top: 200px; display: flex; flex-direction: column; gap: 9px; flex: none; }

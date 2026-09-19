@@ -80,13 +80,13 @@ class UtteranceDetector:
         self.pre_roll: deque[np.ndarray] = deque(maxlen=pre_roll_frames)
         self.active = False
         self.buffers: list[np.ndarray] = []
+        self.buffered_samples = 0
         self.total_samples = 0
         self.utterance_start_sample = 0
         self.max_samples = int(max_utterance_seconds * sample_rate)
 
     def push(self, frame: np.ndarray) -> AudioUtterance | None:
         frame = np.asarray(frame, dtype=np.float32).reshape(-1)
-        frame_start = self.total_samples
         self.total_samples += len(frame)
 
         if not self.active:
@@ -98,12 +98,14 @@ class UtteranceDetector:
             self.active = True
             self.buffers = list(self.pre_roll)
             buffered_samples = sum(len(chunk) for chunk in self.buffers)
+            self.buffered_samples = buffered_samples
             self.utterance_start_sample = max(0, self.total_samples - buffered_samples)
         elif self.active:
             self.buffers.append(frame.copy())
+            self.buffered_samples += len(frame)
 
         ended = bool(event and "end" in event and self.active)
-        forced = self.active and sum(len(chunk) for chunk in self.buffers) >= self.max_samples
+        forced = self.active and self.buffered_samples >= self.max_samples
         if not ended and not forced:
             return None
 
@@ -112,6 +114,7 @@ class UtteranceDetector:
         end_ms = int(self.total_samples * 1000 / self.sample_rate)
         self.active = False
         self.buffers = []
+        self.buffered_samples = 0
         self.pre_roll.clear()
         if forced:
             self.vad.reset_states()

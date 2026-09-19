@@ -28,6 +28,8 @@ class Repository:
     def _initialize(self) -> None:
         with self._lock, self._connection:
             self._connection.execute("PRAGMA journal_mode=WAL")
+            self._connection.execute("PRAGMA foreign_keys=ON")
+            self._connection.execute("PRAGMA busy_timeout=5000")
             self._connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS meetings (
@@ -251,6 +253,8 @@ class Repository:
                         updated_at = excluded.updated_at,
                         information_gain = excluded.information_gain,
                         assumption_surfacing = excluded.assumption_surfacing
+                    WHERE questions.status NOT IN ('displayed', 'resolved', 'expired')
+                        AND excluded.context_version >= questions.context_version
                     """,
                     (
                         question.id,
@@ -322,8 +326,13 @@ class Repository:
         return [self._row_to_question(row) for row in rows]
 
     def best_eligible_question(self, meeting_id: str) -> QuestionCandidate | None:
-        questions = self.questions_by_status(meeting_id, [QuestionStatus.ELIGIBLE])
-        return questions[0] if questions else None
+        with self._lock:
+            row = self._connection.execute(
+                """SELECT * FROM questions WHERE meeting_id = ? AND status = ?
+                ORDER BY final_score DESC, generated_at ASC LIMIT 1""",
+                (meeting_id, QuestionStatus.ELIGIBLE.value),
+            ).fetchone()
+        return self._row_to_question(row) if row else None
 
     def update_question_status(self, question_id: str, status: QuestionStatus) -> None:
         displayed_at = utc_now() if status is QuestionStatus.DISPLAYED else None

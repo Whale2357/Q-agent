@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -10,6 +11,7 @@ from .context import (
     build_askable_focus,
     build_do_not_ask,
     item_content,
+    item_evidence_ids,
 )
 from .domain import (
     QUESTION_CATEGORIES,
@@ -20,6 +22,7 @@ from .domain import (
     utc_now,
 )
 from .prompt_loader import load_prompt
+from .providers import ProviderError
 
 if TYPE_CHECKING:
     from .providers import StructuredLLMClient
@@ -36,7 +39,7 @@ GENERATOR_SCHEMA: dict[str, Any] = {
         "problem_signals": {"type": "array", "items": {"type": "string"}},
         "candidates": {
             "type": "array",
-            "minItems": GENERATOR_CANDIDATE_COUNT,
+            "minItems": 0,
             "maxItems": GENERATOR_CANDIDATE_COUNT,
             "items": {
                 "type": "object",
@@ -226,6 +229,7 @@ _LEADING_PATTERNS = (
 )
 _INTERROGATIVE = re.compile(r"[?？]|까\s*$|나요\s*$|습니까\s*$|인가요\s*$|을까요\s*$|할까요\s*$")
 _TOKEN_RE = re.compile(r"[0-9A-Za-z가-힣]{2,}")
+_PARTICLES = ("에서는", "으로는", "에게는", "까지는", "부터는", "에서", "에게", "으로", "까지", "부터", "처럼", "보다", "은", "는", "이", "가", "을", "를", "의", "에", "와", "과", "도", "만", "로")
 
 
 class QuestionGenerator:
@@ -233,6 +237,8 @@ class QuestionGenerator:
         self.client = client
 
     async def generate(self, state: QuestionContextState) -> list[QuestionCandidate]:
+        if not state.recent_transcript:
+            return []
         system = load_prompt(
             "generator",
             GENERATOR_CANDIDATE_COUNT=GENERATOR_CANDIDATE_COUNT,
@@ -248,31 +254,35 @@ class QuestionGenerator:
             temperature=0.5,
             num_predict=2400,
         )
-        valid_segment_ids = {
-            int(item["segment_id"])
-            for item in state.recent_transcript
-            if item.get("segment_id") is not None
+        if not isinstance(result, dict) or not isinstance(result.get("candidates"), list):
+            raise ProviderError("질문 생성 응답의 candidates 형식이 올바르지 않습니다")
+        # The model may only cite segments actually present in its compact input.
+        transcript = {
+            item["segment_id"]: str(item.get("text", ""))
+            for item in payload["recent_transcript"]
+            if isinstance(item, dict) and type(item.get("segment_id")) is int
         }
-        anchor_corpus = _anchor_corpus_tokens(state)
         purpose = str(result.get("meeting_purpose", "unknown"))
+        if purpose not in PURPOSES:
+            purpose = "unknown"
         candidates: list[QuestionCandidate] = []
         for item in result.get("candidates", [])[:GENERATOR_CANDIDATE_COUNT]:
-            evidence_ids: list[int] = []
-            for segment_id in item.get("evidence_segment_ids", []):
-                try:
-                    parsed_id = int(segment_id)
-                except (TypeError, ValueError):
-                    continue
-                if parsed_id in valid_segment_ids:
-                    evidence_ids.append(parsed_id)
-            text = str(item.get("text", "")).strip()
+            if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+                continue
+            evidence_ids = [value for value in item_evidence_ids(item) if value in transcript]
+            text = item["text"].strip()
             if not text or not evidence_ids:
                 continue
+            if item.get("category") not in QUESTION_CATEGORIES or item.get("operator") not in QUESTION_OPERATORS:
+                continue
+            raw_anchors = item.get("anchor_terms")
+            if not isinstance(raw_anchors, list):
+                continue
             anchors = [
-                str(term).strip()
-                for term in item.get("anchor_terms", [])
-                if str(term).strip()
+                term.strip() for term in raw_anchors
+                if isinstance(term, str) and term.strip()
             ]
+            anchor_corpus = set().union(*(_content_tokens(transcript[value]) for value in evidence_ids))
             if not _anchors_grounded(text, anchors, anchor_corpus):
                 continue
             candidates.append(
@@ -310,7 +320,9 @@ class QuestionEvaluator:
         if not questions:
             return []
 
-        history_texts = _history_texts(state)
+        # Active history contains these very questions during re-evaluation.
+        # Exclude their IDs, then compare the batch against itself just once.
+        history_texts = _history_texts(state, exclude_ids={question.id for question in questions})
         survivors: list[QuestionCandidate] = []
         for question in questions:
             if mode == "reeval":
@@ -353,9 +365,14 @@ class QuestionEvaluator:
             )
         )
         system = load_prompt("evaluator", STALE_GUIDANCE=stale_guidance)
+        evaluation_state = evaluator_state_payload(state)
+        evaluation_state["question_history"] = {
+            bucket: [item for item in rows if item.get("id") not in {q.id for q in questions}]
+            for bucket, rows in evaluation_state["question_history"].items()
+        }
         user = json.dumps(
             {
-                "question_context_state": evaluator_state_payload(state),
+                "question_context_state": evaluation_state,
                 "questions": [
                     _evaluation_prompt_question(question) for question in survivors
                 ],
@@ -370,17 +387,26 @@ class QuestionEvaluator:
             temperature=0.0,
             num_predict=2000,
         )
-        evaluations = {
-            str(item.get("question_id")): item for item in result.get("evaluations", [])
-        }
+        if not isinstance(result, dict) or not isinstance(result.get("evaluations"), list):
+            raise ProviderError("질문 평가 응답의 evaluations 형식이 올바르지 않습니다")
+        evaluations: dict[str, dict[str, Any]] = {}
+        duplicate_ids: set[str] = set()
+        for item in result["evaluations"]:
+            if not isinstance(item, dict) or not isinstance(item.get("question_id"), str):
+                continue
+            question_id = item["question_id"]
+            if question_id in evaluations:
+                duplicate_ids.add(question_id)
+            evaluations[question_id] = item
         for question in survivors:
             item = evaluations.get(question.id)
-            if not item:
+            if not item or question.id in duplicate_ids or not _valid_soft_evaluation(item):
                 question.status = QuestionStatus.REJECTED
-                question.evaluation_reason = "소프트 평가 결과가 누락됨"
+                question.evaluation_reason = "소프트 평가 결과가 누락되거나 형식이 올바르지 않음"
                 question.updated_at = utc_now()
                 continue
-            apply_soft_evaluation(question, item)
+            # The LLM cannot override the independently computed duplicate score.
+            apply_soft_evaluation(question, {key: value for key, value in item.items() if key != "non_redundancy"})
         return questions
 
 
@@ -401,11 +427,8 @@ def rule_reject(
     # Birth-time only: evidence must still sit in the recent window.
     # Re-eval keeps birth evidence and retires via lag / LLM stale instead.
     if mode == "initial":
-        valid_ids = {
-            int(item["segment_id"])
-            for item in state.recent_transcript
-            if item.get("segment_id") is not None
-        }
+        valid_ids = {item["segment_id"] for item in state.recent_transcript
+                     if isinstance(item, dict) and type(item.get("segment_id")) is int}
         if not any(
             segment_id in valid_ids for segment_id in question.evidence_segment_ids
         ):
@@ -458,10 +481,14 @@ def rule_reject(
     return None
 
 
-def _history_texts(state: QuestionContextState) -> list[str]:
+def _history_texts(state: QuestionContextState, *, exclude_ids: set[str] | None = None) -> list[str]:
     texts: list[str] = []
-    for bucket in ("active", "displayed", "resolved", "rejected", "parked"):
+    # Undisplayed rejected/overflow candidates must not permanently blacklist
+    # useful questions in later contexts. Expired is not the same as answered.
+    for bucket in ("active", "displayed", "resolved"):
         for item in state.question_history.get(bucket, []):
+            if not isinstance(item, dict) or item.get("id") in (exclude_ids or set()) or item.get("status") == "expired":
+                continue
             text = str(item.get("text", "")).strip()
             if text:
                 texts.append(text)
@@ -469,7 +496,15 @@ def _history_texts(state: QuestionContextState) -> list[str]:
 
 
 def _tokens(text: str) -> set[str]:
-    return {token.lower() for token in _TOKEN_RE.findall(text)}
+    tokens: set[str] = set()
+    for token in _TOKEN_RE.findall(text):
+        token = token.lower()
+        for particle in _PARTICLES:
+            if token.endswith(particle) and len(token) - len(particle) >= 2:
+                token = token[:-len(particle)]
+                break
+        tokens.add(token)
+    return tokens
 
 
 def _content_tokens(text: str) -> set[str]:
@@ -502,24 +537,19 @@ def _anchor_corpus_tokens(state: QuestionContextState) -> set[str]:
 def _anchors_grounded(
     text: str, anchors: list[str], corpus: set[str]
 ) -> bool:
-    if not anchors:
+    if not anchors or not corpus:
         return False
     text_cf = text.casefold()
     for anchor in anchors:
         anchor = anchor.strip()
         if len(anchor) < 2:
-            continue
+            return False
         if anchor.casefold() not in text_cf:
-            continue
+            return False
         anchor_tokens = _content_tokens(anchor) or _tokens(anchor)
-        if not corpus:
-            return True
-        if anchor_tokens.intersection(corpus):
-            return True
-        # Allow multi-char anchors that appear verbatim in corpus texts via token match
-        if any(token in corpus for token in _tokens(anchor)):
-            return True
-    return False
+        if not anchor_tokens or not anchor_tokens.issubset(corpus):
+            return False
+    return True
 
 
 def _jaccard(left: str, right: str) -> float:
@@ -579,7 +609,7 @@ def apply_soft_evaluation(question: QuestionCandidate, evaluation: dict[str, Any
     question.evaluation_reason = str(normalized.get("reason", ""))
     stale_reason = str(normalized.get("stale_reason", "none"))
 
-    if bool(normalized.get("already_resolved")) or stale_reason == "resolved":
+    if normalized.get("already_resolved") is True or stale_reason == "resolved":
         question.status = QuestionStatus.RESOLVED
     elif stale_reason == "topic_changed":
         question.status = QuestionStatus.EXPIRED
@@ -590,6 +620,7 @@ def apply_soft_evaluation(question: QuestionCandidate, evaluation: dict[str, Any
             and question.purpose_fit >= 2
             and question.contextual_fit >= 2
             and question.non_redundancy >= 2
+            and question.neutrality >= 2
             and question.final_score >= 2
         )
         question.status = (
@@ -643,10 +674,24 @@ def apply_evaluation(question: QuestionCandidate, evaluation: dict[str, Any]) ->
 
 
 def _score(value: Any) -> float:
+    if isinstance(value, bool):
+        return 0.0
     try:
-        return max(0.0, min(3.0, float(value)))
+        score = float(value)
+        return max(0.0, min(3.0, score)) if math.isfinite(score) else 0.0
     except (TypeError, ValueError):
         return 0.0
+
+
+def _valid_soft_evaluation(evaluation: dict[str, Any]) -> bool:
+    return (
+        type(evaluation.get("already_resolved")) is bool
+        and isinstance(evaluation.get("stale_reason"), str)
+        and evaluation.get("stale_reason") in {"none", "resolved", "topic_changed"}
+        and isinstance(evaluation.get("reason"), str)
+        and all(type(evaluation.get(key)) is int and 0 <= evaluation[key] <= 3
+                for key in _SOFT_SCORE_KEYS)
+    )
 
 
 def select_top_questions(
@@ -660,12 +705,13 @@ def select_top_questions(
     selected: list[QuestionCandidate] = []
     selected_ids: set[str] = set()
 
-    for category in QUESTION_CATEGORIES:
-        match = next((question for question in eligible if question.category == category), None)
-        if match is None or len(selected) >= max_questions:
+    selected_categories: set[str] = set()
+    for match in eligible:
+        if match.category in selected_categories or len(selected) >= max_questions:
             continue
         selected.append(match)
         selected_ids.add(match.id)
+        selected_categories.add(match.category)
 
     for question in eligible:
         if len(selected) >= max_questions:

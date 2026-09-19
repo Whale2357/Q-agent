@@ -12,8 +12,10 @@ RUN apt-get update \
 COPY pyproject.toml README.md ./
 COPY src ./src
 
-RUN pip install --no-cache-dir --upgrade pip \
-  && pip install --no-cache-dir .
+# Silero still needs torch/torchaudio, but API-mode servers do not need CUDA wheels.
+RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
+  && pip install --no-cache-dir . \
+  && pip check
 
 ENV REALTIME_HOST=0.0.0.0 \
     REALTIME_PORT=8765 \
@@ -23,4 +25,4 @@ ENV REALTIME_HOST=0.0.0.0 \
 RUN mkdir -p /app/data
 EXPOSE 8765
 
-CMD ["q-agent-realtime-server", "--host", "0.0.0.0", "--port", "8765"]
+CMD ["q-agent-realtime-server"]

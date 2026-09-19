@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -45,6 +46,35 @@ class RuntimeConfig:
     api_key: str = ""
     max_audio_sessions: int = 2
     session_ttl_seconds: float = 120.0
+    max_text_sessions: int = 2
+    max_pending_tickets: int = 128
+    max_session_seconds: float = 7200.0
+    request_timeout_seconds: float = 180.0
+    websocket_idle_seconds: float = 60.0
+
+    def __post_init__(self) -> None:
+        if self.llm_provider not in {"openai", "ollama"}:
+            raise ValueError("LLM_PROVIDER must be openai or ollama")
+        if self.stt_provider not in {"openai", "local"}:
+            raise ValueError("STT_PROVIDER must be openai or local")
+        for name in (
+            "context_interval_seconds", "question_interval_seconds",
+            "reevaluation_interval_seconds", "silence_trigger_seconds",
+            "max_utterance_seconds", "recent_transcript_seconds", "session_ttl_seconds",
+            "max_session_seconds", "request_timeout_seconds", "websocket_idle_seconds",
+            "max_audio_sessions", "max_text_sessions", "max_pending_tickets",
+            "context_model_window_tokens", "generator_model_window_tokens",
+            "evaluator_model_window_tokens", "max_active_questions",
+        ):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive")
+        if not math.isfinite(self.generator_min_interval_seconds) or self.generator_min_interval_seconds < 0:
+            raise ValueError("generator_min_interval_seconds must be finite and nonnegative")
+        if self.sample_rate != 16000 or self.audio_block_size != 512:
+            raise ValueError("Audio must use 16000 Hz and 512-sample VAD blocks")
+        if not 0 < self.vad_threshold < 1:
+            raise ValueError("vad_threshold must be between 0 and 1")
 
     @classmethod
     def from_env(cls) -> "RuntimeConfig":
@@ -100,4 +130,9 @@ class RuntimeConfig:
             api_key=os.getenv("REALTIME_API_KEY", ""),
             max_audio_sessions=int(os.getenv("MAX_AUDIO_SESSIONS", "2")),
             session_ttl_seconds=float(os.getenv("SESSION_TTL_SECONDS", "120")),
+            max_text_sessions=int(os.getenv("MAX_TEXT_SESSIONS", "2")),
+            max_pending_tickets=int(os.getenv("MAX_PENDING_TICKETS", "128")),
+            max_session_seconds=float(os.getenv("REALTIME_MAX_SESSION_SECONDS", "7200")),
+            request_timeout_seconds=float(os.getenv("REALTIME_REQUEST_TIMEOUT_SECONDS", "180")),
+            websocket_idle_seconds=float(os.getenv("REALTIME_WEBSOCKET_IDLE_SECONDS", "60")),
         )

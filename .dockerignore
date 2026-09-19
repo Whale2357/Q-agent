@@ -8,7 +8,10 @@ data
 *.db
 .env
 **/.env
+**/.env.*
 !**/.env.example
+**/*.log
+**/*.tsbuildinfo
 services/realtime/scripts/*.out.txt
 fixtures/quality_ab
 agent-transcripts

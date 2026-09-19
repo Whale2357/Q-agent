@@ -14,10 +14,17 @@ from q_agent_realtime.openai_provider import (
     OpenAITranscriber,
     _strict_json_schema,
     _wav_bytes,
+    _response_output_text,
 )
 
 
 class StructuredSchemaTest(unittest.TestCase):
+    def test_incomplete_and_malformed_outputs_are_rejected(self) -> None:
+        for payload in [[], {"status": "incomplete", "output_text": "{}"},
+                        {"output": None}, {"output": [{"type": "message", "content": None}]}]:
+            with self.subTest(payload=payload), self.assertRaises(OpenAIProviderError):
+                _response_output_text(payload)
+
     def test_nested_objects_are_closed_and_required(self) -> None:
         schema = {
             "type": "object",

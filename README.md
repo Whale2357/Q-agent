@@ -1,4 +1,4 @@
-# Q-Agent
+# STEIN (Q-Agent)
 
 원티드 AI Championship 2026 — 회의 맥락 판독 & 질문 큐레이션 엔진 모노레포.
 
@@ -22,6 +22,8 @@ scripts/smoke-test.mjs web ↔ realtime 통신 검증
 
 ## 로컬 실행 (웹 + realtime)
 
+Node.js **22.18 이상**, Python **3.11 또는 3.12**가 필요합니다.
+
 처음 한 번만 `services/realtime/.env.example`을 `services/realtime/.env`로
 복사하고 `OPENAI_API_KEY=` 뒤에 발급받은 키를 입력합니다. 이 파일은 Git에
 포함되지 않습니다.
@@ -38,7 +40,7 @@ notepad services/realtime/.env
 수동으로 실행하려면 다음 명령을 사용합니다.
 
 ```powershell
-npm install
+npm ci
 cd services/realtime
 python -m pip install -e .
 cd ../..
@@ -87,6 +89,7 @@ API 대신 Ollama와 faster-whisper를 사용하려면 provider를 명시하고 
 Qwen 모델을 설치합니다.
 
 ```powershell
+python -m pip install -e "services/realtime[local]"
 $env:LLM_PROVIDER="ollama"
 $env:STT_PROVIDER="local"
 ollama pull qwen3:1.7b
@@ -102,6 +105,8 @@ realtime이 떠 있는 상태에서:
 npm run smoke
 # web까지 포함하려면
 WEB_URL=http://localhost:3000 npm run smoke
+# 실제 모델 생성까지 검사 (API 비용 발생)
+npm run smoke -- --with-models
 ```
 
 ## Docker Compose
@@ -122,6 +127,17 @@ docker compose up --build
 [`docs/INFRASTRUCTURE.md`](docs/INFRASTRUCTURE.md)
 
 ## 배포 요약
+
+배포 전 [검증 결과와 잔여 운영 확인](docs/PREDEPLOY_REVIEW.md),
+[실행 순서와 환경변수](docs/DEPLOYMENT.md)를 확인하세요.
+실시간 서버는 현재 **단일 프로세스·단일 복제본**으로 운영해야 합니다.
+
+```bash
+npm test
+npm run typecheck
+npm run build
+python -m unittest discover -s services/realtime/tests -v
+```
 
 | 모듈 | 권장 호스트 | 환경변수 |
 | --- | --- | --- |

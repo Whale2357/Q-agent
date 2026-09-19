@@ -26,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", default="data/q-agent.db", help="SQLite DB 경로")
     parser.add_argument("--context-model", default="qwen3:4b")
     parser.add_argument("--generator-model", default="qwen3:8b")
-    parser.add_argument("--evaluator-model", default="qwen3:4b")
+    parser.add_argument("--evaluator-model", default="qwen3:1.7b")
     parser.add_argument(
         "--ollama-url", default="http://127.0.0.1:11434", help="Ollama 기본 URL"
     )
@@ -58,6 +58,7 @@ async def run(args: argparse.Namespace) -> None:
     except ProviderError as error:
         repository.close()
         await llms.close()
+        await transcriber.close()
         raise SystemExit(str(error)) from error
 
 

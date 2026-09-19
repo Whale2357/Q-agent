@@ -44,13 +44,23 @@ def _strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def _response_output_text(payload: dict[str, Any]) -> str:
+    if not isinstance(payload, dict):
+        raise OpenAIProviderError("OpenAI 응답이 JSON 객체가 아닙니다.")
+    if payload.get("status") in ("incomplete", "failed", "cancelled"):
+        raise OpenAIProviderError("OpenAI 응답이 완료되지 않았습니다. 출력 한도와 모델 설정을 확인해 주세요.")
     direct = payload.get("output_text")
     if isinstance(direct, str) and direct.strip():
         return direct
-    for item in payload.get("output", []):
+    output = payload.get("output", [])
+    if not isinstance(output, list):
+        raise OpenAIProviderError("OpenAI 응답의 output 형식이 올바르지 않습니다.")
+    for item in output:
         if not isinstance(item, dict) or item.get("type") != "message":
             continue
-        for content in item.get("content", []):
+        contents = item.get("content", [])
+        if not isinstance(contents, list):
+            continue
+        for content in contents:
             if not isinstance(content, dict):
                 continue
             if content.get("type") == "refusal":
@@ -233,7 +243,9 @@ class OpenAITranscriber:
             )
             response.raise_for_status()
             payload = response.json()
-            text = str(payload.get("text", "")).strip()
+            if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
+                raise OpenAIProviderError("OpenAI STT 응답에 유효한 text가 없습니다.")
+            text = payload["text"].strip()
         except httpx.HTTPStatusError as error:
             raise OpenAIProviderError(
                 _http_error_message("STT", error.response)
@@ -253,7 +265,7 @@ def _http_error_message(component: str, response: httpx.Response) -> str:
     try:
         payload = response.json()
         error = payload.get("error", {}) if isinstance(payload, dict) else {}
-        detail = str(error.get("message", "")).strip()
+        detail = str(error.get("message", "")).strip() if isinstance(error, dict) else ""
     except (TypeError, ValueError):
         pass
     suffix = f": {detail}" if detail else ""

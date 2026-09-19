@@ -8,7 +8,9 @@ import {
   type DragEvent,
   type ReactNode,
 } from "react";
-import type { DiagnoseResponse, ScoredQuestion } from "@q-agent/contracts";
+import { isDiagnosisSuccess, isRealtimeSessionSuccess, isTextMeetingSuccess, MAX_TEXT_CHARACTERS, type DiagnoseResponse, type ScoredQuestion } from "@q-agent/contracts";
+
+import { PcmResampler } from "../lib/audio-resampler";
 
 const HISTORY_STORAGE_KEY = "q-agent-meeting-history-v1";
 const AUDIO_DATABASE_NAME = "q-agent-recordings";
@@ -58,6 +60,7 @@ interface RealtimeEvent {
   transcript?: string;
   diagnosis?: SuccessfulDiagnosis | null;
   message?: string;
+  agent?: string;
   trigger?: "silence" | "ask" | "stop";
   pool_size?: number;
 }
@@ -158,64 +161,50 @@ function realtimeSocketUrl() {
   return `${protocol}//${window.location.hostname}:8765/v1/realtime`;
 }
 
-function downsampleTo16Khz(input: Float32Array, inputRate: number) {
-  if (inputRate === 16_000) return new Float32Array(input);
-  const ratio = inputRate / 16_000;
-  const outputLength = Math.max(1, Math.floor(input.length / ratio));
-  const output = new Float32Array(outputLength);
-  for (let outputIndex = 0; outputIndex < outputLength; outputIndex += 1) {
-    const start = Math.floor(outputIndex * ratio);
-    const end = Math.min(input.length, Math.floor((outputIndex + 1) * ratio));
-    let sum = 0;
-    for (let inputIndex = start; inputIndex < end; inputIndex += 1) sum += input[inputIndex];
-    output[outputIndex] = sum / Math.max(1, end - start);
-  }
-  return output;
-}
-
-function pcmRms(samples: Float32Array) {
-  if (samples.length === 0) return 0;
-  let sum = 0;
-  for (let index = 0; index < samples.length; index += 1) {
-    const value = samples[index] ?? 0;
-    sum += value * value;
-  }
-  return Math.sqrt(sum / samples.length);
+function downsampleTo16Khz(input: Float32Array, sampleRate: number) {
+  return new PcmResampler(sampleRate).process(input);
 }
 
 function openAudioDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(AUDIO_DATABASE_NAME, 1);
+    let expired = false;
+    const timeout = setTimeout(() => { expired = true; reject(new Error("Recording storage timed out")); }, 5_000);
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(AUDIO_STORE_NAME)) {
         request.result.createObjectStore(AUDIO_STORE_NAME);
       }
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      clearTimeout(timeout);
+      if (expired) { request.result.close(); return; }
+      request.result.onversionchange = () => request.result.close();
+      resolve(request.result);
+    };
+    request.onerror = () => { clearTimeout(timeout); reject(request.error); };
   });
 }
 
 async function saveRecording(id: string, blob: Blob) {
   const database = await openAudioDatabase();
-  await new Promise<void>((resolve, reject) => {
+  try { await new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(AUDIO_STORE_NAME, "readwrite");
+    const timeout = setTimeout(() => { transaction.abort(); }, 5_000);
     transaction.objectStore(AUDIO_STORE_NAME).put(blob, id);
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
-  });
-  database.close();
+    transaction.oncomplete = () => { clearTimeout(timeout); resolve(); };
+    transaction.onabort = transaction.onerror = () => { clearTimeout(timeout); reject(transaction.error); };
+  }); } finally { database.close(); }
 }
 
 async function deleteRecording(id: string) {
   const database = await openAudioDatabase();
-  await new Promise<void>((resolve, reject) => {
+  try { await new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(AUDIO_STORE_NAME, "readwrite");
     transaction.objectStore(AUDIO_STORE_NAME).delete(id);
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error);
-  });
-  database.close();
+    transaction.onabort = () => reject(transaction.error);
+  }); } finally { database.close(); }
 }
 
 function wait(milliseconds: number) {
@@ -261,6 +250,8 @@ export default function HomePage() {
   const recordingDurationValue = useRef(0);
   const recordingActive = useRef(false);
   const audioChunks = useRef<Blob[]>([]);
+  const recorderStop = useRef<Promise<void> | null>(null);
+  const savedHistoryIds = useRef<Set<string>>(new Set());
   const liveTranscriptValue = useRef("");
   const latestDiagnosis = useRef<SuccessfulDiagnosis | null>(null);
   const pendingAudioBlob = useRef<Blob | null>(null);
@@ -271,8 +262,9 @@ export default function HomePage() {
   const sessionEndedNormally = useRef(false);
   const discardSession = useRef(false);
   const pendingErrorMessage = useRef<string | null>(null);
-  const reconnectAttempts = useRef(0);
-  const reconnectInFlight = useRef(false);
+  const sessionBusy = useRef(false);
+  const requestController = useRef<AbortController | null>(null);
+  const stopTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const failureFinalizing = useRef(false);
   const dismissTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const questionBurstTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -283,9 +275,17 @@ export default function HomePage() {
   useEffect(() => {
     try {
       const stored = localStorage.getItem(HISTORY_STORAGE_KEY);
-      if (stored) setHistory(JSON.parse(stored) as HistoryItem[]);
+      if (stored) {
+        const parsed: unknown = JSON.parse(stored);
+        if (Array.isArray(parsed)) setHistory(parsed.filter((item): item is HistoryItem =>
+          item && typeof item.id === "string" && typeof item.title === "string"
+          && typeof item.createdAt === "string" && typeof item.transcript === "string"
+          && ["record", "upload", "text"].includes(item.source)
+          && (item.result === null || isDiagnosisSuccess(item.result))
+        ).slice(0, MAX_HISTORY_ITEMS));
+      }
     } catch {
-      localStorage.removeItem(HISTORY_STORAGE_KEY);
+      try { localStorage.removeItem(HISTORY_STORAGE_KEY); } catch { /* Storage may be disabled. */ }
     } finally {
       setHistoryReady(true);
     }
@@ -293,7 +293,16 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!historyReady) return;
-    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history));
+    try {
+      localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history));
+      const retained = new Set(history.map(item => item.id));
+      for (const id of savedHistoryIds.current) {
+        if (!retained.has(id)) void deleteRecording(id).catch(() => undefined);
+      }
+      savedHistoryIds.current = retained;
+    } catch {
+      setWorkspaceMessage("processing", "브라우저 저장 공간이 부족하거나 차단되어 기록을 저장하지 못했습니다.");
+    }
   }, [history, historyReady]);
 
   useEffect(() => {
@@ -316,6 +325,12 @@ export default function HomePage() {
   }, [thoughts]);
 
   useEffect(() => () => {
+    discardSession.current = true;
+    pendingHistoryId.current = null;
+    requestController.current?.abort();
+    if (stopTimer.current) clearTimeout(stopTimer.current);
+    recordingActive.current = false;
+    void stopMediaRecorder();
     clearRecordingTimer();
     dismissTimers.current.forEach(clearTimeout);
     if (questionBurstTimer.current) clearTimeout(questionBurstTimer.current);
@@ -352,16 +367,26 @@ export default function HomePage() {
   }
 
   function stopMediaRecorder() {
+    if (recorderStop.current) return recorderStop.current;
     const recorder = mediaRecorder.current;
     if (!recorder || recorder.state === "inactive") return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      recorder.addEventListener("stop", () => resolve(), { once: true });
+    const completion = new Promise<void>((resolve) => {
+      const finish = () => {
+        clearTimeout(timeout);
+        recorder.removeEventListener("stop", finish);
+        resolve();
+      };
+      const timeout = setTimeout(finish, 5_000);
+      recorder.addEventListener("stop", finish, { once: true });
       try {
         recorder.stop();
       } catch {
-        resolve();
+        finish();
       }
     });
+    recorderStop.current = completion;
+    void completion.finally(() => { if (recorderStop.current === completion) recorderStop.current = null; });
+    return completion;
   }
 
   function cleanupAudioGraph() {
@@ -369,7 +394,7 @@ export default function HomePage() {
     audioProcessor.current?.disconnect();
     audioSource.current?.disconnect();
     silentGain.current?.disconnect();
-    void audioContext.current?.close();
+    void audioContext.current?.close().catch(() => undefined);
     audioProcessor.current = null;
     audioSource.current = null;
     silentGain.current = null;
@@ -395,10 +420,13 @@ export default function HomePage() {
     sessionEndedNormally.current = false;
     discardSession.current = false;
     pendingErrorMessage.current = null;
-    reconnectAttempts.current = 0;
-    reconnectInFlight.current = false;
+    requestController.current?.abort();
+    requestController.current = new AbortController();
+    if (stopTimer.current) clearTimeout(stopTimer.current);
+    sessionBusy.current = true;
     failureFinalizing.current = false;
     recordingDurationValue.current = 0;
+    recordingStartedAt.current = 0;
   }
 
   function allocateThoughtSlot(occupied: Set<number>) {
@@ -438,7 +466,13 @@ export default function HomePage() {
   }
 
   function applyDiagnosis(diagnosis: SuccessfulDiagnosis) {
-    latestDiagnosis.current = diagnosis;
+    if (!isDiagnosisSuccess(diagnosis)) return;
+    const questions = new Map((latestDiagnosis.current?.questions ?? []).map(question => [question.id, question]));
+    for (const question of diagnosis.questions) questions.set(question.id, question);
+    const allQuestions = [...questions.values()];
+    latestDiagnosis.current = { ...diagnosis, questions: allQuestions, rejected: allQuestions.length === 0,
+      status: allQuestions.length ? "done" : "rejected",
+      reject_reason: allQuestions.length ? undefined : diagnosis.reject_reason };
     addQuestions(diagnosis.questions);
   }
 
@@ -467,17 +501,25 @@ export default function HomePage() {
     }
     if (event.type === "stopped") {
       sessionEndedNormally.current = true;
+      if (stopTimer.current) clearTimeout(stopTimer.current);
       realtimeStopped.current = true;
       if (event.transcript !== undefined) liveTranscriptValue.current = event.transcript;
       if (event.diagnosis) applyDiagnosis(event.diagnosis);
-      setActivity("done");
-      if (!event.diagnosis || event.diagnosis.rejected || event.diagnosis.questions.length === 0) {
+      if (!latestDiagnosis.current?.questions.length) {
         setWorkspaceMessage("rejected", "질문이 비어 반려되었습니다. 오류가 아니라 평가 기준을 넘은 질문이 없는 상태입니다.");
       } else {
         clearWorkspaceMessage();
       }
       realtimeSocket.current = null;
-      void persistCompletedSession();
+      void (async () => {
+        const sessionId = pendingHistoryId.current;
+        await stopMediaRecorder();
+        stopMediaStream();
+        await persistCompletedSession();
+        if (sessionId !== pendingHistoryId.current || discardSession.current) return;
+        sessionBusy.current = false;
+        setActivity("done");
+      })();
       return;
     }
     if (event.type === "error") {
@@ -485,141 +527,85 @@ export default function HomePage() {
     }
   }
 
-  function connectRealtimeSocket({ reconnecting = false }: { reconnecting?: boolean } = {}) {
+  async function connectRealtimeSocket() {
+    const sessionId = pendingHistoryId.current;
+    const response = await fetch("/api/realtime/session", {
+      method: "POST", cache: "no-store",
+      signal: AbortSignal.any([requestController.current!.signal, AbortSignal.timeout(20_000)]),
+    });
+    const payload = await response.json();
+    if (!response.ok || !isRealtimeSessionSuccess(payload)) {
+      throw new Error(payload.error?.message ?? "녹음 세션을 발급받지 못했습니다.");
+    }
+    if (discardSession.current || sessionId !== pendingHistoryId.current) throw new Error("녹음이 취소되었습니다.");
+    const url = realtimeSocketUrl();
+    if (window.location.protocol === "https:" && !url.startsWith("wss://")) throw new Error("배포 서버의 보안 녹음 연결 주소가 설정되지 않았습니다.");
+    const socket = new WebSocket(url);
+    realtimeSocket.current = socket;
+    setActivity("connecting");
     return new Promise<WebSocket>((resolve, reject) => {
-      void (async () => {
-        let sessionToken = "";
-        try {
-          const sessionResponse = await fetch("/api/realtime/session", {
-            method: "POST",
-            cache: "no-store",
-          });
-          const sessionPayload = (await sessionResponse.json()) as {
-            ok?: boolean;
-            token?: string;
-            error?: { message?: string };
-          };
-          if (!sessionResponse.ok || !sessionPayload.ok || !sessionPayload.token) {
-            throw new Error(
-              sessionPayload.error?.message ?? "녹음 세션을 발급받지 못했습니다."
-            );
-          }
-          sessionToken = sessionPayload.token;
-        } catch (error) {
-          reject(
-            error instanceof Error
-              ? error
-              : new Error("네트워크/서버 오류: 녹음 세션 발급에 실패했습니다.")
-          );
-          return;
+      let settled = false;
+      const isCurrent = () => !discardSession.current && sessionId === pendingHistoryId.current && realtimeSocket.current === socket;
+      const fail = (message: string) => {
+        clearTimeout(timeout);
+        if (!settled) {
+          settled = true;
+          reject(new Error(message));
+        } else if (isCurrent() && !sessionEndedNormally.current) {
+          void finalizeFailedSession(message);
         }
-
-        const socket = new WebSocket(realtimeSocketUrl());
-        realtimeSocket.current = socket;
-        if (!reconnecting) setActivity("connecting");
-        let settled = false;
-        let disconnectReported = false;
-        const timeout = setTimeout(() => {
-          if (realtimeSocket.current === socket) realtimeSocket.current = null;
-          socket.close();
-          if (!settled) {
-            settled = true;
-            reject(new Error("네트워크/서버 오류: realtime 모델 준비 시간이 초과되었습니다."));
-          }
-        }, 180_000);
-
-        const reportDisconnect = (message: string) => {
-          if (disconnectReported || realtimeSocket.current !== socket) return;
-          disconnectReported = true;
-          realtimeSocket.current = null;
-          clearTimeout(timeout);
-          if (!settled) {
-            settled = true;
-            reject(new Error(`네트워크/서버 오류: ${message}`));
-            return;
-          }
-          void recoverRealtimeConnection(message);
-        };
-
-        socket.onopen = () =>
-          socket.send(
-            JSON.stringify({
-              type: "start",
-              sample_rate: 16_000,
-              session_token: sessionToken,
-            })
-          );
-        socket.onmessage = (message) => {
-          try {
-            const event = JSON.parse(String(message.data)) as RealtimeEvent;
-            if (event.type === "error") {
-              const serverMessage = event.message ?? "realtime 서버가 오류를 반환했습니다.";
-              if (!settled) {
-                settled = true;
-                clearTimeout(timeout);
-                if (realtimeSocket.current === socket) realtimeSocket.current = null;
-                socket.close();
-                reject(new Error(`네트워크/서버 오류: ${serverMessage}`));
-              } else {
-                reportDisconnect(serverMessage);
-                socket.close();
-              }
+        if (socket.readyState < WebSocket.CLOSING) socket.close();
+      };
+      const timeout = setTimeout(() => fail("서버의 녹음 준비 시간이 초과되었습니다."), 190_000);
+      socket.onopen = () => socket.send(JSON.stringify({ type: "start", sample_rate: 16_000, session_token: payload.token }));
+      socket.onmessage = message => {
+        if (!isCurrent()) return;
+        try {
+          const event = JSON.parse(String(message.data)) as RealtimeEvent;
+          if (!event || typeof event.type !== "string") throw new Error("Invalid event");
+          if (event.diagnosis && !isDiagnosisSuccess(event.diagnosis)) throw new Error("Invalid diagnosis");
+          if (event.type === "error") {
+            if (event.agent && settled) {
+              setWorkspaceMessage("processing", event.message ?? "AI 처리에 실패했습니다. 다음 발화부터 다시 시도합니다.");
               return;
             }
-            if (event.type === "ready" && !settled) {
-              settled = true;
-              clearTimeout(timeout);
-              resolve(socket);
-            }
-            handleRealtimeEvent(event);
-          } catch {
-            setWorkspaceMessage("processing", "서버 응답을 해석하지 못했습니다.");
+            fail(event.message ?? "실시간 연결이 종료되었습니다.");
+            return;
           }
-        };
-        socket.onerror = () => {
-          reportDisconnect("realtime 서비스에 연결할 수 없습니다. 서버 상태를 확인해 주세요.");
-          if (socket.readyState < WebSocket.CLOSING) socket.close();
-        };
-        socket.onclose = () => {
-          if (!sessionEndedNormally.current && !discardSession.current) {
-            reportDisconnect("realtime 연결이 예기치 않게 종료되었습니다.");
+          if (event.type === "ready" && !settled) {
+            settled = true;
+            clearTimeout(timeout);
+            resolve(socket);
           }
-        };
-      })();
+          handleRealtimeEvent(event);
+        } catch { fail("서버 응답을 해석하지 못했습니다."); }
+      };
+      socket.onerror = () => fail("분석 서버에 연결하지 못했습니다.");
+      socket.onclose = () => {
+        clearTimeout(timeout);
+        if (!settled || (isCurrent() && !sessionEndedNormally.current)) fail("연결이 끊겼습니다. 현재까지의 기록을 저장했습니다. 새 녹음을 시작해 주세요.");
+      };
     });
   }
 
   async function recoverRealtimeConnection(message: string) {
-    if (sessionEndedNormally.current || discardSession.current || reconnectInFlight.current) return;
-    if (recordingActive.current && reconnectAttempts.current < 1) {
-      reconnectAttempts.current += 1;
-      reconnectInFlight.current = true;
-      setWorkspaceMessage("network", "네트워크 연결이 끊겨 자동으로 한 번 재연결하고 있습니다.");
-      try {
-        const socket = await connectRealtimeSocket({ reconnecting: true });
-        clearWorkspaceMessage();
-        if (recordingActive.current) {
-          setActivity("recording");
-        } else {
-          setActivity("processing");
-          socket.send(JSON.stringify({ type: "stop" }));
-        }
-      } catch (caught) {
-        const detail = caught instanceof Error ? caught.message.replace(/^네트워크\/서버 오류:\s*/, "") : message;
-        await finalizeFailedSession(`네트워크/서버 오류: 자동 재연결에 실패했습니다. ${detail}`);
-      } finally {
-        reconnectInFlight.current = false;
-      }
-      return;
-    }
-    await finalizeFailedSession(`네트워크/서버 오류: ${message}`);
+    if (sessionEndedNormally.current || discardSession.current) return;
+    await finalizeFailedSession(message);
+  }
+
+  function awaitStopResult() {
+    if (stopTimer.current) clearTimeout(stopTimer.current);
+    stopTimer.current = setTimeout(() => {
+      void finalizeFailedSession("분석 마무리 시간이 초과되었습니다. 현재까지의 기록을 저장했습니다.", "processing");
+    }, 210_000);
   }
 
   async function finalizeFailedSession(message: string, kind: WorkspaceMessageKind = "network") {
-    if (failureFinalizing.current) return;
+    if (failureFinalizing.current || discardSession.current || sessionEndedNormally.current) return;
     failureFinalizing.current = true;
     pendingErrorMessage.current = message;
-    setActivity("error");
+    if (stopTimer.current) clearTimeout(stopTimer.current);
+    setActivity("processing");
     setWorkspaceMessage(kind, message);
     recordingActive.current = false;
     clearRecordingTimer();
@@ -627,6 +613,7 @@ export default function HomePage() {
       const elapsed = Math.max(1, Math.floor((Date.now() - recordingStartedAt.current) / 1000));
       recordingDurationValue.current = Math.max(recordingDurationValue.current, elapsed);
       setRecordingSeconds(recordingDurationValue.current);
+      recordingStartedAt.current = 0;
     }
     cleanupAudioGraph();
     closeRealtimeSocket();
@@ -634,6 +621,8 @@ export default function HomePage() {
     stopMediaStream();
     await persistCompletedSession(message);
     failureFinalizing.current = false;
+    sessionBusy.current = false;
+    setActivity("error");
   }
 
   async function persistCompletedSession(failureMessage = pendingErrorMessage.current) {
@@ -666,7 +655,9 @@ export default function HomePage() {
     };
     setHistory((previous) => [historyItem, ...previous.filter((item) => item.id !== id)].slice(0, MAX_HISTORY_ITEMS));
     setActiveHistoryId(id);
-    if (blob) await saveRecording(id, blob).catch(() => undefined);
+    if (blob) await saveRecording(id, blob).catch(() => {
+      setWorkspaceMessage("processing", "분석 기록은 보관했지만 브라우저 저장 공간 문제로 녹음 파일을 저장하지 못했습니다.");
+    });
     if (pendingHistoryId.current === id) {
       pendingAudioBlob.current = null;
       pendingErrorMessage.current = null;
@@ -674,35 +665,44 @@ export default function HomePage() {
   }
 
   async function startRecording() {
-    if (isThinking) return;
+    if (sessionBusy.current || isThinking) return;
     prepareSession("record", `회의 녹음 · ${new Intl.DateTimeFormat("ko-KR", { hour: "numeric", minute: "2-digit" }).format(new Date())}`, null);
     setRecordingSeconds(0);
+    setActivity("connecting");
+    const sessionId = pendingHistoryId.current;
 
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       setActivity("error");
+      sessionBusy.current = false;
       setWorkspaceMessage("processing", "이 브라우저에서는 마이크 녹음을 지원하지 않습니다. 최신 Chrome 또는 Edge를 사용해 주세요.");
       return;
     }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (discardSession.current || sessionId !== pendingHistoryId.current) {
+        stream.getTracks().forEach(track => track.stop());
+        return;
+      }
       mediaStream.current = stream;
       await connectRealtimeSocket();
+      if (discardSession.current || sessionId !== pendingHistoryId.current) return;
       const preferredTypes = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
       const mimeType = preferredTypes.find((type) => MediaRecorder.isTypeSupported(type));
       const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
 
       mediaRecorder.current = recorder;
-      audioChunks.current = [];
+      const chunks: Blob[] = [];
+      audioChunks.current = chunks;
       recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) audioChunks.current.push(event.data);
+        if (event.data.size > 0) chunks.push(event.data);
       };
       recorder.onstop = () => {
-        pendingAudioBlob.current = new Blob(audioChunks.current, { type: recorder.mimeType || "audio/webm" });
+        if (sessionId !== pendingHistoryId.current || discardSession.current) return;
+        pendingAudioBlob.current = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
         stream.getTracks().forEach((track) => track.stop());
         mediaStream.current = null;
         mediaRecorder.current = null;
-        void persistCompletedSession();
       };
       recorder.onerror = () => {
         void finalizeFailedSession("녹음 처리 오류: 브라우저에서 오디오 데이터를 저장하지 못했습니다.", "processing");
@@ -710,16 +710,22 @@ export default function HomePage() {
       recorder.start(1000);
 
       const context = new AudioContext();
+      audioContext.current = context;
       await context.resume();
+      if (discardSession.current || sessionId !== pendingHistoryId.current || failureFinalizing.current) return;
       const source = context.createMediaStreamSource(stream);
       const processor = context.createScriptProcessor(4096, 1, 1);
       const gain = context.createGain();
       gain.gain.value = 0;
+      const resampler = new PcmResampler(context.sampleRate);
       processor.onaudioprocess = (event) => {
         const socket = realtimeSocket.current;
         if (!recordingActive.current || socket?.readyState !== WebSocket.OPEN) return;
-        const pcm = downsampleTo16Khz(event.inputBuffer.getChannelData(0), context.sampleRate);
-        if (pcmRms(pcm) < 0.008) return;
+        const pcm = resampler.process(event.inputBuffer.getChannelData(0));
+        if (socket.bufferedAmount > 2 * 1024 * 1024) {
+          void finalizeFailedSession("오디오 전송이 지연되어 녹음을 종료했습니다. 네트워크를 확인해 주세요.");
+          return;
+        }
         socket.send(pcm.buffer);
       };
       source.connect(processor);
@@ -736,11 +742,15 @@ export default function HomePage() {
         const elapsed = Math.floor((Date.now() - recordingStartedAt.current) / 1000);
         recordingDurationValue.current = elapsed;
         setRecordingSeconds(elapsed);
+        if (elapsed >= 7200) stopRecording();
       }, 250);
       setActivity("recording");
     } catch (caught) {
+      if (discardSession.current || sessionId !== pendingHistoryId.current) return;
       recordingActive.current = false;
       discardSession.current = true;
+      sessionBusy.current = false;
+      await stopMediaRecorder();
       stopMediaStream();
       cleanupAudioGraph();
       closeRealtimeSocket();
@@ -758,18 +768,22 @@ export default function HomePage() {
   }
 
   function stopRecording() {
-    if (activity !== "recording") return;
+    if (!recordingActive.current) return;
     recordingActive.current = false;
     cleanupAudioGraph();
     clearRecordingTimer();
     const elapsed = Math.max(1, Math.floor((Date.now() - recordingStartedAt.current) / 1000));
     recordingDurationValue.current = elapsed;
+    recordingStartedAt.current = 0;
     setRecordingSeconds(elapsed);
     setActivity("processing");
     if (realtimeSocket.current?.readyState === WebSocket.OPEN) {
       realtimeSocket.current.send(JSON.stringify({ type: "stop" }));
+      awaitStopResult();
+    } else {
+      void finalizeFailedSession("녹음 연결이 끊겼습니다. 현재까지의 기록을 저장했습니다.");
     }
-    if (mediaRecorder.current?.state === "recording") mediaRecorder.current.stop();
+    void stopMediaRecorder();
   }
 
   async function retryRecording() {
@@ -785,7 +799,8 @@ export default function HomePage() {
       stopMediaStream();
       setActivity("idle");
       clearWorkspaceMessage();
-      await startRecording();
+      if (pendingSource.current !== "record" && selectedFile) await sendUploadedAudio();
+      else await startRecording();
     } finally {
       setRetrying(false);
     }
@@ -807,7 +822,7 @@ export default function HomePage() {
   }
 
   function selectFile(file: File | null) {
-    if (!file || isThinking) return;
+    if (!file || sessionBusy.current || isThinking) return;
     const audio = isAudioUpload(file);
     const text = isTextUpload(file);
     if (!audio && !text) {
@@ -817,13 +832,13 @@ export default function HomePage() {
       );
       return;
     }
-    const maxBytes = audio ? 200 * 1024 * 1024 : 5 * 1024 * 1024;
+    const maxBytes = audio ? 50 * 1024 * 1024 : 512 * 1024;
     if (file.size > maxBytes) {
       setWorkspaceMessage(
         "processing",
         audio
-          ? "오디오 파일은 200MB 이하만 업로드할 수 있습니다."
-          : "텍스트 파일은 5MB 이하만 업로드할 수 있습니다."
+          ? "오디오 파일은 50MB 이하만 업로드할 수 있습니다."
+          : "텍스트 파일은 512KB 이하만 업로드할 수 있습니다."
       );
       return;
     }
@@ -846,6 +861,7 @@ export default function HomePage() {
     const context = new AudioContext();
     try {
       const decoded = await context.decodeAudioData(await file.arrayBuffer());
+      if (decoded.duration > 1800) throw new Error("오디오 파일은 30분 이하만 분석할 수 있습니다.");
       const mono = new Float32Array(decoded.length);
       for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
         const channelData = decoded.getChannelData(channel);
@@ -864,17 +880,21 @@ export default function HomePage() {
 
   async function sendUploadedText(file: File) {
     prepareSession("text", file.name, null);
+    const sessionId = pendingHistoryId.current;
+    const controller = requestController.current!;
     setActivity("processing");
     try {
       const content = (await file.text()).trim();
-      if (content.length < 8) {
-        throw new Error("텍스트가 너무 짧습니다. 8자 이상 입력해 주세요.");
+      if (discardSession.current || sessionId !== pendingHistoryId.current) return;
+      if (content.length < 8 || content.length > MAX_TEXT_CHARACTERS) {
+        throw new Error("텍스트는 8자 이상 100,000자 이하로 입력해 주세요.");
       }
       liveTranscriptValue.current = content;
       const response = await fetch("/api/realtime/text", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: content, language: "ko" }),
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(210_000)]),
         cache: "no-store",
       });
       const payload = (await response.json()) as {
@@ -883,12 +903,14 @@ export default function HomePage() {
         transcript?: string;
         error?: { message?: string };
       };
-      if (!response.ok || !payload.ok || !payload.diagnosis) {
+      if (discardSession.current || sessionId !== pendingHistoryId.current) return;
+      if (!response.ok || !isTextMeetingSuccess(payload)) {
         throw new Error(payload.error?.message ?? "텍스트 분석에 실패했습니다.");
       }
       if (payload.transcript) liveTranscriptValue.current = payload.transcript;
       realtimeStopped.current = true;
       sessionEndedNormally.current = true;
+      sessionBusy.current = false;
       applyDiagnosis(payload.diagnosis);
       setActivity("done");
       if (payload.diagnosis.rejected || payload.diagnosis.questions.length === 0) {
@@ -901,6 +923,7 @@ export default function HomePage() {
       }
       await persistCompletedSession();
     } catch (caught) {
+      if (discardSession.current || sessionId !== pendingHistoryId.current) return;
       const message =
         caught instanceof Error ? caught.message : "텍스트 파일 분석에 실패했습니다.";
       const kind: WorkspaceMessageKind = /네트워크|서버|realtime|연결/i.test(message)
@@ -910,34 +933,46 @@ export default function HomePage() {
       setActivity("error");
       setWorkspaceMessage(kind, message);
       await persistCompletedSession(message);
+      sessionBusy.current = false;
     }
   }
 
   async function sendUploadedAudio() {
-    if (!selectedFile || isThinking) return;
+    if (!selectedFile || sessionBusy.current || isThinking) return;
     if (isTextUpload(selectedFile) && !isAudioUpload(selectedFile)) {
       await sendUploadedText(selectedFile);
       return;
     }
 
     prepareSession("upload", selectedFile.name, selectedFile);
+    const sessionId = pendingHistoryId.current;
     setActivity("processing");
 
     try {
       const { pcm, durationSeconds } = await decodeAudioFile(selectedFile);
+      if (discardSession.current || sessionId !== pendingHistoryId.current) return;
       recordingDurationValue.current = durationSeconds;
       setRecordingSeconds(durationSeconds);
       const socket = await connectRealtimeSocket();
+      if (discardSession.current || sessionId !== pendingHistoryId.current) return;
       setActivity("processing");
 
       const chunkSize = 16_384;
       for (let offset = 0; offset < pcm.length; offset += chunkSize) {
-        while (socket.bufferedAmount > 2 * 1024 * 1024) await wait(20);
+        const deadline = Date.now() + 180_000;
+        while (socket.bufferedAmount > 256 * 1024) {
+          if (socket.readyState !== WebSocket.OPEN || Date.now() > deadline) throw new Error("오디오 업로드 연결이 종료되거나 전송 시간이 초과되었습니다.");
+          await wait(20);
+        }
+        if (socket.readyState !== WebSocket.OPEN) throw new Error("오디오 업로드 연결이 종료되었습니다.");
         socket.send(pcm.slice(offset, Math.min(offset + chunkSize, pcm.length)).buffer);
         if ((offset / chunkSize) % 24 === 0) await wait(0);
       }
       socket.send(JSON.stringify({ type: "stop" }));
+      awaitStopResult();
     } catch (caught) {
+      if (discardSession.current || sessionId !== pendingHistoryId.current) return;
+      if (failureFinalizing.current || sessionEndedNormally.current) return;
       const message = caught instanceof Error ? caught.message : "오디오 파일 분석에 실패했습니다.";
       const kind: WorkspaceMessageKind = /네트워크|서버|realtime|연결/i.test(message) ? "network" : "processing";
       pendingErrorMessage.current = message;
@@ -945,6 +980,7 @@ export default function HomePage() {
       setActivity("error");
       setWorkspaceMessage(kind, message);
       await persistCompletedSession(message);
+      sessionBusy.current = false;
     }
   }
 
@@ -962,7 +998,7 @@ export default function HomePage() {
   }
 
   function switchMode(nextMode: WorkspaceMode) {
-    if (isThinking) return;
+    if (sessionBusy.current || isThinking) return;
     setMode(nextMode);
     clearWorkspaceMessage();
     setActivity("idle");
@@ -985,10 +1021,11 @@ export default function HomePage() {
   }
 
   function startNewMeeting() {
-    if (activity === "recording") {
-      discardSession.current = true;
-      stopRecording();
-    }
+    if (sessionBusy.current || isThinking) return;
+    discardSession.current = true;
+    pendingHistoryId.current = null;
+    requestController.current?.abort();
+    closeRealtimeSocket();
     setThoughts([]);
     setDismissingIds(new Set());
     setIsEmittingQuestion(false);
@@ -1003,7 +1040,7 @@ export default function HomePage() {
   }
 
   function openHistory(item: HistoryItem) {
-    if (isThinking) return;
+    if (sessionBusy.current || isThinking) return;
     knownQuestionIds.current = new Set((item.result?.questions ?? []).map((question) => question.id));
     setIsEmittingQuestion(false);
     if (questionBurstTimer.current) clearTimeout(questionBurstTimer.current);
@@ -1032,6 +1069,7 @@ export default function HomePage() {
   }
 
   async function removeHistory(item: HistoryItem) {
+    if (sessionBusy.current || isThinking) return;
     setHistory((previous) => previous.filter((entry) => entry.id !== item.id));
     if (item.source === "record" || item.source === "upload") await deleteRecording(item.id).catch(() => undefined);
     if (activeHistoryId === item.id) startNewMeeting();
@@ -1064,7 +1102,7 @@ export default function HomePage() {
             <div><Icon name="history" /><h2>회의 기록</h2></div>
             <button className="sidebar-close" type="button" aria-label="기록 닫기" onClick={() => setSidebarOpen(false)}><Icon name="close" /></button>
           </div>
-          <button className="new-meeting-button" type="button" onClick={startNewMeeting}><Icon name="plus" /><span>새 회의 시작</span></button>
+          <button className="new-meeting-button" type="button" disabled={isThinking} onClick={startNewMeeting}><Icon name="plus" /><span>새 회의 시작</span></button>
           <div className="history-list">
             <p className="history-label">최근 기록</p>
             {historyReady && history.length === 0 && (
@@ -1080,7 +1118,7 @@ export default function HomePage() {
               </div>
             ))}
           </div>
-          <p className="history-storage-note">기록과 녹음은 이 브라우저에만 저장됩니다.</p>
+          <p className="history-storage-note">녹음 파일은 이 브라우저에, 분석용 회의 텍스트는 서버에 저장됩니다.</p>
         </aside>
 
         <section className="brain-workspace" aria-label="회의 질문 생성">
@@ -1141,7 +1179,7 @@ export default function HomePage() {
                       ? isTextUpload(selectedFile) && !isAudioUpload(selectedFile)
                         ? `${(selectedFile.size / 1024).toFixed(1)}KB · 텍스트`
                         : `${(selectedFile.size / 1024 / 1024).toFixed(1)}MB · ${formatDuration(recordingSeconds)}`
-                      : "오디오 MP3/WAV 등 · 텍스트 TXT/MD 등 · 오디오 최대 200MB"}
+                      : "오디오 MP3/WAV 등 · 텍스트 TXT/MD 등 · 오디오 최대 50MB / 30분"}
                   </span>
                 </label>
                 <button className="generate-button" type="button" disabled={!selectedFile || isThinking} onClick={() => void sendUploadedAudio()}><Icon name="spark" />질문 생성 시작</button>

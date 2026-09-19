@@ -15,9 +15,14 @@
     "build:contracts": "npm run build -w @q-agent/contracts",
     "start:web": "npm run start -w @q-agent/web",
     "smoke": "node scripts/smoke-test.mjs",
+    "check:deploy": "node scripts/check-deployment.mjs",
+    "test": "node --test scripts/tests/*.test.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
+  "overrides": {
+    "postcss": "8.5.28"
+  },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.18.0"
   }
 }

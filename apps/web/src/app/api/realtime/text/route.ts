@@ -1,42 +1,13 @@
-import { NextResponse } from "next/server";
+import { isTextMeetingSuccess } from "@q-agent/contracts";
+import { guardRequest, readTextRequest, proxyRealtime } from "../../../../lib/realtime-proxy";
 
-const REALTIME_SERVICE_URL =
-  process.env.REALTIME_SERVICE_URL || "http://127.0.0.1:8765";
-const REALTIME_API_KEY = process.env.REALTIME_API_KEY || "";
-
-function upstreamHeaders(init?: HeadersInit): Headers {
-  const headers = new Headers(init);
-  if (REALTIME_API_KEY) {
-    headers.set("Authorization", `Bearer ${REALTIME_API_KEY}`);
-  }
-  return headers;
-}
+export const runtime = "nodejs";
+export const maxDuration = 240;
 
 export async function POST(request: Request) {
-  try {
-    const body = await request.json();
-    const upstream = await fetch(`${REALTIME_SERVICE_URL}/v1/text`, {
-      method: "POST",
-      headers: upstreamHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(body),
-      cache: "no-store",
-    });
-    const data = await upstream.json();
-    return NextResponse.json(data, { status: upstream.status });
-  } catch (error) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: {
-          code: "REALTIME_UNAVAILABLE",
-          message:
-            error instanceof Error
-              ? error.message
-              : "realtime service unavailable",
-          retryable: true,
-        },
-      },
-      { status: 502 }
-    );
-  }
+  const denied = guardRequest(request, "text");
+  if (denied) return denied;
+  const body = await readTextRequest(request);
+  if (body instanceof Response) return body;
+  return proxyRealtime(request, "/v1/text", isTextMeetingSuccess, body);
 }

@@ -27,10 +27,10 @@ LangGraph 없이 순수 Python으로 동작하며, 로컬 모델과 OpenAI API�
 - CPU/Python: 오디오 수신, VAD, 버퍼, transcript·상태 저장, 이벤트 기반 주기 제어
 - GPU/faster-whisper: 확정된 발화의 음성 인식
 - Qwen Context Agent: transcript dirty 시(debounce) Question Context State 병합
-- Qwen Generator: Context 갱신 신호 + 최소 25초 간격으로 후보 5개 생성·저장
+- Generator: Context 갱신 신호 + 최소 25초 간격으로 근거가 있는 후보 0~5개 생성
 - Hybrid Evaluator: 규칙(길이·의문형·근거·중복·금칙) + LLM(정보이득·가정·stale)
 - 최종 노출: 서버 침묵 20초 또는 WebSocket `ask` / 녹음 종료 시 1문장
-- Stop 최적화: 활성 풀이 있으면 즉시 노출(불필요한 3단 LLM 생략)
+- Stop 처리: 마지막 PCM·전사·맥락을 먼저 반영하고 최신 평가 질문만 노출
 - 세션 게이트: `POST /v1/session` 단회 토큰 + `MAX_AUDIO_SESSIONS` 동시 녹음 상한
 - HTTP 보호: `REALTIME_API_KEY` 설정 시 `/v1/text`·`/v1/session`에 Bearer 필요
 
@@ -39,17 +39,20 @@ LangGraph 없이 순수 Python으로 동작하며, 로컬 모델과 OpenAI API�
 
 ## 설치
 
-Python 3.11 또는 3.12 환경에서 실행합니다.
+Python 3.11 또는 3.12 환경에서 실행합니다. 기본은 OpenAI API 모드이며,
+Ollama/로컬 Whisper는 선택 사항입니다. 서버의 Silero VAD는 CPU ONNX를 사용합니다.
 
 ```powershell
-conda activate Q-agent
-cd C:\Users\xnejf\q-agent\services\realtime
+# 저장소 루트에서
+cd services/realtime
 python -m pip install -e .
 ```
 
-Ollama가 실행 중이고 역할별 모델 3개가 설치되어 있어야 합니다.
+아래 로컬 마이크 CLI 또는 `STT_PROVIDER=local`을 사용할 때는 추가 패키지와
+Ollama 모델이 필요합니다. 기본 API 웹 서버에는 필요하지 않습니다.
 
 ```powershell
+python -m pip install -e ".[local]"
 ollama pull qwen3:1.7b
 ollama pull qwen3:4b
 ollama pull qwen3:8b
@@ -146,7 +149,7 @@ OpenAI 모드에서는 실제 녹음을 시작하기 전에 API 키와 각 모�
 | 역할 | 기본 모델 | 주기 | thinking | temperature |
 | --- | --- | --- | --- | --- |
 | Context Updater | `qwen3:4b` | 5초 | off | 0.1 |
-| Question Generator (5개 배치) | `qwen3:8b` | 30초 | on | 0.5 |
+| Question Generator (최대 5개) | `qwen3:8b` | 상태 확인 5초 / 생성 최소 25초 | on | 0.5 |
 | Question Evaluator | `qwen3:1.7b` | 후보 즉시 + 활성 질문 60초 | off | 0.0 |
 
 기본 컨텍스트 길이는 Context/Evaluator 4K, Generator 8K입니다. Ollama의 동시
@@ -167,3 +170,7 @@ python -m unittest discover -s tests -v
 
 테스트는 마이크, GPU, Ollama 없이 실행됩니다. OpenAI 연동 테스트도 모의 HTTP
 서버를 사용하므로 실제 API 키와 비용이 필요하지 않습니다.
+
+공개 배포는 [배포 안내](../../docs/DEPLOYMENT.md)를 따르세요. 세션 티켓과
+슬롯은 메모리에 있어 서버를 여러 worker/replica로 늘리면 안 됩니다.
+SQLite 저장소는 영구 볼륨에 두고 별도 보존·백업 정책을 정해야 합니다.

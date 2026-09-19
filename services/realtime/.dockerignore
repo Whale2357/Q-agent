@@ -3,6 +3,10 @@ __pycache__
 *.py[cod]
 *.egg-info
 .env
+.env.*
+!.env.example
+*.log
+*.db*
 data
 scripts/*.out.txt
 .pytest_cache

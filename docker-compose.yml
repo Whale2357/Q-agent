@@ -1,10 +1,11 @@
 services:
   realtime:
+    restart: unless-stopped
     build:
       context: ./services/realtime
       dockerfile: Dockerfile
     ports:
-      - "8765:8765"
+      - "${REALTIME_PORT:-8765}:8765"
     env_file:
       - ./services/realtime/.env
     environment:
@@ -15,6 +16,10 @@ services:
       REALTIME_API_KEY: ${REALTIME_API_KEY:-}
       MAX_AUDIO_SESSIONS: ${MAX_AUDIO_SESSIONS:-2}
       SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-120}
+      MAX_TEXT_SESSIONS: ${MAX_TEXT_SESSIONS:-2}
+      MAX_PENDING_TICKETS: ${MAX_PENDING_TICKETS:-128}
+      REALTIME_MAX_SESSION_SECONDS: ${REALTIME_MAX_SESSION_SECONDS:-7200}
+      REALTIME_REQUEST_TIMEOUT_SECONDS: ${REALTIME_REQUEST_TIMEOUT_SECONDS:-180}
     volumes:
       - ./data:/app/data
     healthcheck:
@@ -23,21 +28,22 @@ services:
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=3)",
+          "import urllib.request,json; r=json.load(urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=8)); assert r.get('ok') is True",
         ]
       interval: 15s
-      timeout: 5s
+      timeout: 10s
       retries: 10
       start_period: 40s
 
   web:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: apps/web/Dockerfile
       args:
         NEXT_PUBLIC_REALTIME_WS_URL: ${NEXT_PUBLIC_REALTIME_WS_URL:-ws://localhost:8765/v1/realtime}
     ports:
-      - "3000:3000"
+      - "${WEB_PORT:-3000}:3000"
     environment:
       REALTIME_SERVICE_URL: http://realtime:8765
       REALTIME_API_KEY: ${REALTIME_API_KEY:-}

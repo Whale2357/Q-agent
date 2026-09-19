@@ -168,8 +168,7 @@ try {
 
   $dependencyFiles = @(
     (Join-Path $repoRoot "node_modules\react\index.js"),
-    (Join-Path $repoRoot "node_modules\next\package.json"),
-    (Join-Path $repoRoot "node_modules\express\package.json")
+    (Join-Path $repoRoot "node_modules\next\package.json")
   )
   $dependenciesReady = ($dependencyFiles | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -eq 0
 
@@ -207,11 +206,6 @@ try {
   Write-Step "4/5  Building the shared web contract"
   & $npmCommand.Source run build:contracts
   if ($LASTEXITCODE -ne 0) { throw "Contract build failed." }
-
-  $nextCache = Join-Path $repoRoot "apps\web\.next"
-  if (Test-Path -LiteralPath $nextCache) {
-    Remove-Item -LiteralPath $nextCache -Recurse -Force
-  }
 
   Write-Step "5/5  Starting the realtime API and web app"
   Start-QAgentRealtime

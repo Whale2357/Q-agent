@@ -510,7 +510,8 @@ class PromptLoaderTest(unittest.TestCase):
             GENERATOR_CANDIDATE_COUNT=5,
             PURPOSE_GUIDE=load_prompt("purpose_guide"),
         )
-        self.assertIn("정확히 5개의 서로 다른 후보", text)
+        self.assertIn("최대 5개의 서로 다른 후보", text)
+        self.assertIn("빈 candidates 배열", text)
         self.assertIn("decision_making", text)
         self.assertIn("일반론", text)
         self.assertIn("월요일 출시", text)

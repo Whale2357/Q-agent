@@ -3,10 +3,12 @@
  *
  *   node scripts/smoke-test.mjs
  *   WEB_URL=http://localhost:3000 node scripts/smoke-test.mjs
+ *   Add --with-models to exercise real generation (provider charges apply).
  */
 const REALTIME_URL = process.env.REALTIME_SERVICE_URL || "http://127.0.0.1:8765";
 const WEB_URL = process.env.WEB_URL || "";
 const REALTIME_API_KEY = process.env.REALTIME_API_KEY || "";
+const WITH_MODELS = process.argv.includes("--with-models");
 
 const SAMPLE_TEXT = [
   "오늘 회의에서는 Q-Agent 배포 범위를 확정하자.",
@@ -23,7 +25,7 @@ function authHeaders(extra = {}) {
 }
 
 async function getJson(url, init) {
-  const res = await fetch(url, init);
+  const res = await fetch(url, { ...init, signal: AbortSignal.timeout(210_000) });
   let json = null;
   try {
     json = await res.json();
@@ -57,14 +59,18 @@ async function main() {
   );
   report.push("OK realtime /v1/session");
 
-  const text = await getJson(`${REALTIME_URL}/v1/text`, {
-    method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ text: SAMPLE_TEXT, language: "ko" }),
-  });
-  assert(text.res.ok && text.json?.ok, `realtime /v1/text failed: ${JSON.stringify(text.json)}`);
-  assert(text.json.diagnosis, "realtime /v1/text missing diagnosis");
-  report.push("OK realtime /v1/text");
+  if (WITH_MODELS) {
+    const text = await getJson(`${REALTIME_URL}/v1/text`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ text: SAMPLE_TEXT, language: "ko" }),
+    });
+    assert(text.res.ok && text.json?.ok, `realtime /v1/text failed: ${JSON.stringify(text.json)}`);
+    assert(text.json.diagnosis, "realtime /v1/text missing diagnosis");
+    report.push("OK realtime /v1/text");
+  } else {
+    report.push("SKIP model generation (add --with-models; consumes provider credits)");
+  }
 
   if (WEB_URL) {
     const webHealth = await getJson(`${WEB_URL}/api/health`);
@@ -83,16 +89,18 @@ async function main() {
     );
     report.push("OK web BFF /api/realtime/session");
 
-    const webText = await getJson(`${WEB_URL}/api/realtime/text`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: SAMPLE_TEXT, language: "ko" }),
-    });
-    assert(
-      webText.res.ok && webText.json?.ok,
-      `web /api/realtime/text failed: ${JSON.stringify(webText.json)}`
-    );
-    report.push("OK web BFF /api/realtime/text");
+    if (WITH_MODELS) {
+      const webText = await getJson(`${WEB_URL}/api/realtime/text`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: SAMPLE_TEXT, language: "ko" }),
+      });
+      assert(
+        webText.res.ok && webText.json?.ok,
+        `web /api/realtime/text failed: ${JSON.stringify(webText.json)}`
+      );
+      report.push("OK web BFF /api/realtime/text");
+    }
   } else {
     report.push("SKIP web BFF (set WEB_URL to include)");
   }
