@@ -25,5 +25,8 @@ q-agent-realtime-server = "q_agent_realtime.server:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+q_agent_realtime = ["prompts/*.md"]
+
 [tool.unittest]
 start-directory = "tests"

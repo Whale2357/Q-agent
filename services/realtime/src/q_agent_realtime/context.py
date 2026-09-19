@@ -4,6 +4,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from .domain import DISCUSSION_KEYS, QuestionContextState, TranscriptSegment, utc_now
+from .prompt_loader import load_prompt
 
 if TYPE_CHECKING:
     from .providers import StructuredLLMClient
@@ -19,6 +20,36 @@ PURPOSES = (
     "alignment",
     "unknown",
 )
+
+_ASKABLE_SOURCE_KEYS = (
+    "open_issues",
+    "uncertainties",
+    "blockers",
+    "decision_criteria",
+)
+_OPEN_STATUSES = {"", "open", "active", "unresolved", "pending", "in_progress"}
+_RESOLVED_STATUSES = {
+    "resolved",
+    "superseded",
+    "closed",
+    "done",
+    "decided",
+    "agreed",
+}
+
+
+_FOCUS_ITEM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "content": {"type": "string"},
+        "source": {"type": "string"},
+        "evidence_segment_ids": {
+            "type": "array",
+            "items": {"type": "integer"},
+        },
+    },
+    "required": ["content", "source", "evidence_segment_ids"],
+}
 
 
 CONTEXT_SCHEMA: dict[str, Any] = {
@@ -58,6 +89,11 @@ CONTEXT_SCHEMA: dict[str, Any] = {
             },
             "required": list(DISCUSSION_KEYS),
         },
+        "askable_focus": {
+            "type": "array",
+            "maxItems": 5,
+            "items": _FOCUS_ITEM_SCHEMA,
+        },
     },
     "required": [
         "global_summary",
@@ -65,8 +101,180 @@ CONTEXT_SCHEMA: dict[str, Any] = {
         "current_topic_summary",
         "current_purpose",
         "discussion_state",
+        "askable_focus",
     ],
 }
+
+
+def item_content(item: Any) -> str:
+    if isinstance(item, str):
+        return item.strip()
+    if isinstance(item, dict):
+        return str(item.get("content") or item.get("text") or "").strip()
+    return ""
+
+
+def item_status(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("status", "open")).strip().lower()
+    return "open"
+
+
+def item_evidence_ids(item: Any) -> list[int]:
+    if not isinstance(item, dict):
+        return []
+    ids: list[int] = []
+    for value in item.get("evidence_segment_ids", []) or []:
+        try:
+            ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+def is_open_status(status: str) -> bool:
+    return status in _OPEN_STATUSES
+
+
+def is_resolved_status(status: str) -> bool:
+    return status in _RESOLVED_STATUSES
+
+
+def normalize_discussion_state(
+    discussion: dict[str, list[Any]],
+) -> dict[str, list[Any]]:
+    """Keep open buckets open-only; move resolved-status rows into resolved_items."""
+    normalized = {key: [] for key in DISCUSSION_KEYS}
+    for key in DISCUSSION_KEYS:
+        raw = discussion.get(key, [])
+        items = raw if isinstance(raw, list) else []
+        if key in {"decisions", "resolved_items"}:
+            for item in items:
+                content = item_content(item)
+                if not content:
+                    continue
+                if isinstance(item, dict):
+                    row = dict(item)
+                    row.setdefault("status", "resolved" if key == "resolved_items" else "decided")
+                    row["content"] = content
+                    normalized[key].append(row)
+                else:
+                    normalized[key].append(
+                        {
+                            "content": content,
+                            "status": "resolved" if key == "resolved_items" else "decided",
+                            "evidence_segment_ids": [],
+                        }
+                    )
+            continue
+
+        for item in items:
+            content = item_content(item)
+            if not content:
+                continue
+            status = item_status(item)
+            if key in _ASKABLE_SOURCE_KEYS and is_resolved_status(status):
+                normalized["resolved_items"].append(
+                    {
+                        "content": content,
+                        "status": status,
+                        "evidence_segment_ids": item_evidence_ids(item),
+                    }
+                )
+                continue
+            if isinstance(item, dict):
+                row = dict(item)
+                row["content"] = content
+                if key in _ASKABLE_SOURCE_KEYS and not status:
+                    row["status"] = "open"
+                normalized[key].append(row)
+            else:
+                normalized[key].append(
+                    {
+                        "content": content,
+                        "status": "open",
+                        "evidence_segment_ids": [],
+                    }
+                )
+    return normalized
+
+
+def build_do_not_ask(
+    discussion: dict[str, list[Any]] | None, *, limit: int = 12
+) -> list[str]:
+    discussion = discussion or {}
+    texts: list[str] = []
+    seen: set[str] = set()
+    for key in ("resolved_items", "decisions"):
+        for item in discussion.get(key, []) or []:
+            content = item_content(item)
+            if not content:
+                continue
+            key_norm = content.casefold()
+            if key_norm in seen:
+                continue
+            seen.add(key_norm)
+            texts.append(content)
+            if len(texts) >= limit:
+                return texts
+    return texts
+
+
+def build_askable_focus(
+    discussion: dict[str, list[Any]] | None,
+    llm_focus: list[Any] | None = None,
+    *,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    discussion = discussion or {}
+    do_not = {text.casefold() for text in build_do_not_ask(discussion, limit=24)}
+    focus: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _append(content: str, source: str, evidence: list[int]) -> None:
+        key = content.casefold()
+        if not content or key in seen or key in do_not:
+            return
+        # Soft skip if content is nearly identical to a do_not_ask line.
+        for blocked in do_not:
+            if blocked and (blocked in key or key in blocked):
+                return
+        seen.add(key)
+        focus.append(
+            {
+                "content": content,
+                "source": source,
+                "evidence_segment_ids": evidence,
+            }
+        )
+
+    if isinstance(llm_focus, list):
+        for item in llm_focus:
+            if len(focus) >= limit:
+                break
+            if isinstance(item, dict):
+                _append(
+                    item_content(item),
+                    str(item.get("source") or "open_issues"),
+                    item_evidence_ids(item),
+                )
+            else:
+                _append(item_content(item), "open_issues", [])
+
+    if len(focus) < limit:
+        for source in _ASKABLE_SOURCE_KEYS:
+            for item in discussion.get(source, []) or []:
+                if len(focus) >= limit:
+                    break
+                status = item_status(item)
+                if not is_open_status(status) and status not in {""}:
+                    if is_resolved_status(status):
+                        continue
+                _append(item_content(item), source, item_evidence_ids(item))
+            if len(focus) >= limit:
+                break
+
+    return focus[:limit]
 
 
 class ContextUpdater:
@@ -80,14 +288,7 @@ class ContextUpdater:
         recent_segments: list[TranscriptSegment],
         question_history: dict[str, list[dict[str, object]]],
     ) -> QuestionContextState:
-        system = """당신은 Q-Agent의 회의 맥락 갱신기다.
-이전 상태와 새 발화를 합쳐 질문 생성용 맥락을 한국어로 갱신한다.
-결론만 압축하지 말고 논의의 변화, 제안의 이유, 대안, 근거, 반론, 미해결 사항을 보존한다.
-새 발화가 기존 내용을 해결하거나 뒤집으면 항목을 삭제하지 말고 status를 resolved 또는 superseded로 바꾼다.
-발화에 없는 사실, 감정, 합의, 발화자 의도를 추측하지 않는다.
-모든 구조화 항목에는 실제 근거 segment id만 연결한다.
-현재 1~2분의 활동을 기준으로 current_purpose를 판단한다.
-JSON 스키마에 맞는 객체만 반환한다. /no_think"""
+        system = load_prompt("context")
         user = json.dumps(
             {
                 "meeting_objective": state.meeting_objective,
@@ -97,6 +298,7 @@ JSON 스키마에 맞는 객체만 반환한다. /no_think"""
                     "current_topic_summary": state.current_topic_summary,
                     "current_purpose": state.current_purpose,
                     "discussion_state": state.discussion_state,
+                    "askable_focus": state.askable_focus,
                 },
                 "new_transcript": [segment.prompt_dict() for segment in new_segments],
                 "recent_transcript": [segment.prompt_dict() for segment in recent_segments],
@@ -110,7 +312,7 @@ JSON 스키마에 맞는 객체만 반환한다. /no_think"""
             schema=CONTEXT_SCHEMA,
             think=False,
             temperature=0.1,
-            num_predict=1600,
+            num_predict=1800,
         )
 
         state.version += 1
@@ -121,12 +323,16 @@ JSON 스키마에 맞는 객체만 반환한다. /no_think"""
         )
         state.current_purpose = result.get("current_purpose", state.current_purpose)
         incoming_discussion = result.get("discussion_state") or {}
-        state.discussion_state = {
+        raw_discussion = {
             key: incoming_discussion.get(key, [])
             if isinstance(incoming_discussion.get(key, []), list)
             else []
             for key in DISCUSSION_KEYS
         }
+        state.discussion_state = normalize_discussion_state(raw_discussion)
+        state.askable_focus = build_askable_focus(
+            state.discussion_state, result.get("askable_focus")
+        )
         state.recent_transcript = [segment.prompt_dict() for segment in recent_segments]
         state.question_history = question_history
         state.last_processed_segment_id = max(

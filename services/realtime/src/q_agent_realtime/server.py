@@ -661,25 +661,34 @@ class RealtimeMeetingSession:
     @staticmethod
     def _question_payload(question: QuestionCandidate) -> dict[str, Any]:
         badges: list[str] = []
-        if question.information_gain >= 2:
+        if question.purpose_fit >= 2:
             badges.append("info_gain")
         if question.non_redundancy >= 2:
             badges.append("non_redundant")
-        if question.assumption_surfacing >= 2:
+        if question.critical_push >= 2:
             badges.append("assumption")
-        if question.final_score >= 2.4:
+        if question.specificity >= 2 or question.contextual_fit >= 2:
+            badges.append("relevant")
+        if question.openness >= 2 or question.follow_through >= 2 or question.final_score >= 2.4:
             badges.append("depth")
-        badges.append("relevant")
+        if "relevant" not in badges:
+            badges.append("relevant")
         return {
             "id": question.id,
             "text": question.text,
             "category": question.category,
             "operator": question.operator,
             "scores": {
-                "info_gain": round(question.information_gain / 3, 3),
+                "info_gain": round(question.purpose_fit / 3, 3),
                 "non_redundant": round(question.non_redundancy / 3, 3),
-                "relevant": 1.0,
-                "depth": round(question.assumption_surfacing / 3, 3),
+                "relevant": round(
+                    (question.specificity + question.contextual_fit) / 6, 3
+                ),
+                "depth": round(
+                    (question.critical_push + question.openness + question.follow_through)
+                    / 9,
+                    3,
+                ),
                 "final": round(question.final_score / 3, 3),
             },
             "badges": list(dict.fromkeys(badges)),

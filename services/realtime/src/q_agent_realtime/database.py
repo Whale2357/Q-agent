@@ -95,6 +95,17 @@ class Repository:
                 "operator",
                 "TEXT NOT NULL DEFAULT 'criterion_clarification'",
             )
+            for column in (
+                "clarity",
+                "specificity",
+                "purpose_fit",
+                "critical_push",
+                "contextual_fit",
+                "openness",
+                "follow_through",
+                "neutrality",
+            ):
+                self._ensure_column("questions", column, "REAL NOT NULL DEFAULT 0")
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
         columns = {
@@ -211,20 +222,35 @@ class Repository:
                         id, meeting_id, text, meeting_purpose, detected_problem,
                         question_role, theory, context_version, category, operator,
                         evidence_segment_ids_json, status,
-                        information_gain, non_redundancy, assumption_surfacing,
-                        final_score, evaluation_reason, generated_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        clarity, specificity, purpose_fit, critical_push,
+                        contextual_fit, openness, follow_through, neutrality,
+                        non_redundancy, final_score, evaluation_reason,
+                        generated_at, updated_at,
+                        information_gain, assumption_surfacing
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?
+                    )
                     ON CONFLICT(id) DO UPDATE SET
                         status = excluded.status,
                         context_version = excluded.context_version,
                         category = excluded.category,
                         operator = excluded.operator,
-                        information_gain = excluded.information_gain,
+                        clarity = excluded.clarity,
+                        specificity = excluded.specificity,
+                        purpose_fit = excluded.purpose_fit,
+                        critical_push = excluded.critical_push,
+                        contextual_fit = excluded.contextual_fit,
+                        openness = excluded.openness,
+                        follow_through = excluded.follow_through,
+                        neutrality = excluded.neutrality,
                         non_redundancy = excluded.non_redundancy,
-                        assumption_surfacing = excluded.assumption_surfacing,
                         final_score = excluded.final_score,
                         evaluation_reason = excluded.evaluation_reason,
-                        updated_at = excluded.updated_at
+                        updated_at = excluded.updated_at,
+                        information_gain = excluded.information_gain,
+                        assumption_surfacing = excluded.assumption_surfacing
                     """,
                     (
                         question.id,
@@ -239,13 +265,22 @@ class Repository:
                         question.operator,
                         json.dumps(question.evidence_segment_ids),
                         question.status.value,
-                        question.information_gain,
+                        question.clarity,
+                        question.specificity,
+                        question.purpose_fit,
+                        question.critical_push,
+                        question.contextual_fit,
+                        question.openness,
+                        question.follow_through,
+                        question.neutrality,
                         question.non_redundancy,
-                        question.assumption_surfacing,
                         question.final_score,
                         question.evaluation_reason,
                         question.generated_at,
                         question.updated_at,
+                        # Legacy columns kept in sync for older readers.
+                        question.purpose_fit,
+                        question.critical_push,
                     ),
                 )
 
@@ -353,6 +388,16 @@ class Repository:
 
     @staticmethod
     def _row_to_question(row: sqlite3.Row) -> QuestionCandidate:
+        keys = set(row.keys())
+
+        def _col(name: str, *aliases: str, default: float = 0.0) -> float:
+            if name in keys and row[name] is not None:
+                return float(row[name])
+            for alias in aliases:
+                if alias in keys and row[alias] is not None:
+                    return float(row[alias])
+            return default
+
         return QuestionCandidate(
             id=str(row["id"]),
             meeting_id=str(row["meeting_id"]),
@@ -366,10 +411,16 @@ class Repository:
             operator=str(row["operator"]),
             evidence_segment_ids=json.loads(row["evidence_segment_ids_json"]),
             status=QuestionStatus(str(row["status"])),
-            information_gain=float(row["information_gain"]),
-            non_redundancy=float(row["non_redundancy"]),
-            assumption_surfacing=float(row["assumption_surfacing"]),
-            final_score=float(row["final_score"]),
+            clarity=_col("clarity"),
+            specificity=_col("specificity"),
+            purpose_fit=_col("purpose_fit", "information_gain"),
+            critical_push=_col("critical_push", "assumption_surfacing"),
+            contextual_fit=_col("contextual_fit"),
+            openness=_col("openness"),
+            follow_through=_col("follow_through"),
+            neutrality=_col("neutrality"),
+            non_redundancy=_col("non_redundancy"),
+            final_score=_col("final_score"),
             evaluation_reason=str(row["evaluation_reason"]),
             generated_at=str(row["generated_at"]),
             updated_at=str(row["updated_at"]),

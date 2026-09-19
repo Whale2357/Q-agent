@@ -5,7 +5,12 @@ import re
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from .context import PURPOSES
+from .context import (
+    PURPOSES,
+    build_askable_focus,
+    build_do_not_ask,
+    item_content,
+)
 from .domain import (
     QUESTION_CATEGORIES,
     QUESTION_OPERATORS,
@@ -14,6 +19,7 @@ from .domain import (
     QuestionStatus,
     utc_now,
 )
+from .prompt_loader import load_prompt
 
 if TYPE_CHECKING:
     from .providers import StructuredLLMClient
@@ -51,6 +57,12 @@ GENERATOR_SCHEMA: dict[str, Any] = {
                         "type": "array",
                         "items": {"type": "integer"},
                     },
+                    "target_focus": {"type": "string"},
+                    "anchor_terms": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                    },
                 },
                 "required": [
                     "text",
@@ -60,6 +72,8 @@ GENERATOR_SCHEMA: dict[str, Any] = {
                     "category",
                     "operator",
                     "evidence_segment_ids",
+                    "target_focus",
+                    "anchor_terms",
                 ],
             },
         },
@@ -69,6 +83,17 @@ GENERATOR_SCHEMA: dict[str, Any] = {
 
 
 # Soft scores only — hard filters are applied in code (hybrid evaluator).
+_SOFT_SCORE_KEYS = (
+    "clarity",
+    "specificity",
+    "purpose_fit",
+    "critical_push",
+    "contextual_fit",
+    "openness",
+    "follow_through",
+    "neutrality",
+)
+
 EVALUATOR_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -79,13 +104,9 @@ EVALUATOR_SCHEMA: dict[str, Any] = {
                 "properties": {
                     "question_id": {"type": "string"},
                     "already_resolved": {"type": "boolean"},
-                    "information_gain": {
-                        "type": "integer",
-                        "enum": [0, 1, 2, 3],
-                    },
-                    "assumption_surfacing": {
-                        "type": "integer",
-                        "enum": [0, 1, 2, 3],
+                    **{
+                        key: {"type": "integer", "enum": [0, 1, 2, 3]}
+                        for key in _SOFT_SCORE_KEYS
                     },
                     "reason": {"type": "string"},
                     "stale_reason": {
@@ -96,8 +117,7 @@ EVALUATOR_SCHEMA: dict[str, Any] = {
                 "required": [
                     "question_id",
                     "already_resolved",
-                    "information_gain",
-                    "assumption_surfacing",
+                    *_SOFT_SCORE_KEYS,
                     "reason",
                     "stale_reason",
                 ],
@@ -107,20 +127,102 @@ EVALUATOR_SCHEMA: dict[str, Any] = {
     "required": ["evaluations"],
 }
 
+# category → soft+NR weights (sum ≈ 1.0). Core axes dominate; aux is role-tilted.
+CATEGORY_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
+    "essence": {
+        "clarity": 0.16,
+        "specificity": 0.16,
+        "purpose_fit": 0.16,
+        "contextual_fit": 0.14,
+        "non_redundancy": 0.12,
+        "critical_push": 0.08,
+        "openness": 0.04,
+        "follow_through": 0.06,
+        "neutrality": 0.08,
+    },
+    "blind_spot": {
+        "clarity": 0.12,
+        "specificity": 0.14,
+        "purpose_fit": 0.14,
+        "contextual_fit": 0.12,
+        "non_redundancy": 0.10,
+        "critical_push": 0.16,
+        "openness": 0.10,
+        "follow_through": 0.06,
+        "neutrality": 0.06,
+    },
+    "expansion": {
+        "clarity": 0.12,
+        "specificity": 0.12,
+        "purpose_fit": 0.14,
+        "contextual_fit": 0.12,
+        "non_redundancy": 0.10,
+        "critical_push": 0.08,
+        "openness": 0.14,
+        "follow_through": 0.12,
+        "neutrality": 0.06,
+    },
+}
 
-PURPOSE_GUIDE = """
-progress_coordination: Team Reflexivity로 병목과 계획 관성을 점검
-idea_exploration: Representational Change로 제약 완화와 탐색 공간 확장
-decision_making: Inquiry와 Constructive Controversy로 기준·대안·증거 검증
-problem_solving: Double-loop Learning과 Reframing으로 원인·문제 정의 재검토
-planning_strategy: Team Reflexivity와 Pre-mortem으로 목표·전제·위험 검증
-performance_review: Team Learning과 Double-loop Learning으로 예상-실제 차이 학습
-alignment: Constructive Controversy와 Psychological Safety로 관점 차이를 안전하게 표면화
-""".strip()
 
 _UNSAFE_PATTERNS = (
     re.compile(r"(바보|멍청|한심|쓰레기|꺼져|죽어)"),
     re.compile(r"(당신|너)\s*(잘못|탓|책임)"),
+)
+_ABSTRACT_PATTERNS = (
+    re.compile(r"어떻게\s*생각하(세|시)요"),
+    re.compile(r"중요(한가요|할까|할까요|합니까)"),
+    re.compile(r"(소통|커뮤니케이션).{0,12}(개선|원활)"),
+    re.compile(r"(방향|비전|전략).{0,16}(어떻|무엇).{0,8}(좋|바뀌|잡)"),
+    re.compile(r"^(그럼|그러면)?\s*(어떻게|무엇을)\s*(하면|할까요|하죠)"),
+    re.compile(r"의견을?\s*(듣|공유|나눠)"),
+    re.compile(r"(일정|스케줄).{0,12}(조율|맞추).{0,10}(어떻|할까|하면)"),
+    re.compile(r"(개선|향상).{0,12}(어떻|무엇|방안)"),
+    re.compile(r"(리스크|위험).{0,8}(없|있).{0,8}(나요|습니까|을까|을까요)"),
+    re.compile(r"^(무엇을|뭘)\s*(해야|하면|논의)"),
+)
+_RESOLVED_OVERLAP_THRESHOLD = 0.36
+_STOPWORDS = {
+    "그리고",
+    "그래서",
+    "그러나",
+    "그런",
+    "이것",
+    "저것",
+    "오늘",
+    "내일",
+    "우리",
+    "저희",
+    "관련",
+    "대해",
+    "위한",
+    "있는",
+    "없는",
+    "하는",
+    "해야",
+    "하면",
+    "무엇",
+    "어떻게",
+    "어느",
+    "누가",
+    "언제",
+    "어디",
+    "기준",
+    "결정",
+    "논의",
+    "확인",
+    "검토",
+    "생각",
+    "부분",
+    "내용",
+    "문제",
+    "사항",
+}
+_LEADING_PATTERNS = (
+    re.compile(r"(맞지\s*않|그렇지\s*않|해야\s*하는\s*거\s*아니|당연하)"),
+    re.compile(r"(이미|당연히|분명히)\s*.{0,12}(아닌가요|죠\s*\?)"),
+    re.compile(r"(맞|그렇).{0,8}(아닌가요|않나요)"),
+    re.compile(r"동의해\s*(주|하실|하시)"),
 )
 _INTERROGATIVE = re.compile(r"[?？]|까\s*$|나요\s*$|습니까\s*$|인가요\s*$|을까요\s*$|할까요\s*$")
 _TOKEN_RE = re.compile(r"[0-9A-Za-z가-힣]{2,}")
@@ -131,21 +233,13 @@ class QuestionGenerator:
         self.client = client
 
     async def generate(self, state: QuestionContextState) -> list[QuestionCandidate]:
-        system = f"""당신은 Q-Agent의 질문 생성기다.
-질문은 회의 흐름을 방해하는 장식이 아니라 실제 병목을 해소하는 개입이어야 한다.
-먼저 현재 회의 목적과 문제 신호를 판단한 뒤 정확히 {GENERATOR_CANDIDATE_COUNT}개의 서로 다른 후보를 만든다.
-category는 blind_spot, essence, expansion을 각각 최소 1개 포함한다.
-operator는 assumption_challenge, reframing, criterion_clarification,
-counterfactual, constraint_relaxation을 가능한 한 고르게 사용한다.
-근거가 없거나 이미 답이 나온 질문, 일반론, 특정인을 공격하는 질문은 만들지 않는다.
-말하지 않은 사람의 감정이나 반대를 단정하지 말고 안전한 초대형 질문으로 표현한다.
-각 후보는 recent_transcript의 실제 segment id를 하나 이상 근거로 가져야 한다.
-
-목적별 이론 가이드:
-{PURPOSE_GUIDE}
-
-JSON 스키마에 맞는 객체만 반환한다."""
-        user = json.dumps(state.to_dict(), ensure_ascii=False)
+        system = load_prompt(
+            "generator",
+            GENERATOR_CANDIDATE_COUNT=GENERATOR_CANDIDATE_COUNT,
+            PURPOSE_GUIDE=load_prompt("purpose_guide"),
+        )
+        payload = generator_state_payload(state)
+        user = json.dumps(payload, ensure_ascii=False)
         result = await self.client.chat_json(
             system=system,
             user=user,
@@ -159,6 +253,7 @@ JSON 스키마에 맞는 객체만 반환한다."""
             for item in state.recent_transcript
             if item.get("segment_id") is not None
         }
+        anchor_corpus = _anchor_corpus_tokens(state)
         purpose = str(result.get("meeting_purpose", "unknown"))
         candidates: list[QuestionCandidate] = []
         for item in result.get("candidates", [])[:GENERATOR_CANDIDATE_COUNT]:
@@ -172,6 +267,13 @@ JSON 스키마에 맞는 객체만 반환한다."""
                     evidence_ids.append(parsed_id)
             text = str(item.get("text", "")).strip()
             if not text or not evidence_ids:
+                continue
+            anchors = [
+                str(term).strip()
+                for term in item.get("anchor_terms", [])
+                if str(term).strip()
+            ]
+            if not _anchors_grounded(text, anchors, anchor_corpus):
                 continue
             candidates.append(
                 QuestionCandidate(
@@ -241,18 +343,16 @@ class QuestionEvaluator:
         stale_guidance = (
             "재평가 모드다. 근거 segment가 최근 창에서 빠져도 그것만으로 탈락시키지 않는다. "
             "주제가 바뀌었으면 stale_reason=topic_changed, 이미 답이 나왔으면 already_resolved/"
-            "stale_reason=resolved로 만료·해결 처리한다."
+            "stale_reason=resolved로 만료·해결 처리한다. do_not_ask·resolved_items·decisions와 "
+            "겹치면 resolved로 처리한다."
             if mode == "reeval"
-            else "최초 평가 모드다. 후보가 현재 맥락에 맞는지만 본다."
+            else (
+                "최초 평가 모드다. do_not_ask·resolved_items·decisions와 의미가 겹치면 "
+                "already_resolved=true, stale_reason=resolved로 처리한다. "
+                "askable_focus 밖이거나 고유명·기한·수치가 없으면 specificity를 1 이하로 준다."
+            )
         )
-        system = f"""당신은 Q-Agent의 질문 소프트 평가기다.
-규칙 필터를 통과한 후보만 받는다. 다음만 판정한다.
-- information_gain: 답이 결정/다음 행동을 바꾸는 정도 (정수 0~3)
-- assumption_surfacing: 암묵적 전제를 드러내는 정도 (정수 0~3)
-- already_resolved / stale_reason: 이미 해결됨 또는 주제 변경
-비중복·형식·금칙·근거 segment는 코드가 이미 검사했으므로 반복하지 않는다.
-{stale_guidance}
-JSON 스키마에 맞는 객체만 반환한다. /no_think"""
+        system = load_prompt("evaluator", STALE_GUIDANCE=stale_guidance)
         user = json.dumps(
             {
                 "question_context_state": evaluator_state_payload(state),
@@ -313,22 +413,48 @@ def rule_reject(
     for pattern in _UNSAFE_PATTERNS:
         if pattern.search(text):
             return "규칙: 사회적 안전성(비난·추궁) 위반"
+    for pattern in _ABSTRACT_PATTERNS:
+        if pattern.search(text):
+            return "규칙: 일반론·추상 질문 패턴"
+    for pattern in _LEADING_PATTERNS:
+        if pattern.search(text):
+            return "규칙: 유도·선입견 질문 패턴"
     max_sim = max((_jaccard(text, other) for other in history_texts), default=0.0)
     if max_sim >= 0.72:
         return "규칙: 기존 질문/이력과 과도하게 중복"
+
+    do_not_ask = build_do_not_ask(state.discussion_state)
+    for blocked in do_not_ask:
+        if _jaccard(text, blocked) >= _RESOLVED_OVERLAP_THRESHOLD:
+            return "규칙: 이미 결정·해결된 내용과 겹침"
+        blocked_tokens = _content_tokens(blocked)
+        question_tokens = _content_tokens(text)
+        if (
+            blocked_tokens
+            and question_tokens
+            and blocked_tokens.issubset(question_tokens)
+            and len(blocked_tokens) >= 2
+        ):
+            return "규칙: 이미 결정·해결된 내용과 겹침"
+
     if mode == "initial":
+        focus_tokens = _askable_tokens(state)
         recent_blob = " ".join(
             str(item.get("text", "")) for item in state.recent_transcript
         )
-        if (
-            recent_blob
-            and _jaccard(text, recent_blob) < 0.02
-            and len(recent_blob) > 40
-        ):
-            tokens_q = _tokens(text)
-            tokens_r = _tokens(recent_blob)
-            if tokens_q and tokens_r.isdisjoint(tokens_q):
-                return "규칙: 최근 발화와 관련 토큰이 없음"
+        if focus_tokens:
+            question_tokens = _content_tokens(text)
+            if not question_tokens.intersection(focus_tokens):
+                return "규칙: askable_focus·open_issues 앵커 없음"
+        elif recent_blob:
+            if (
+                _jaccard(text, recent_blob) < 0.02
+                and len(recent_blob) > 40
+            ):
+                tokens_q = _tokens(text)
+                tokens_r = _tokens(recent_blob)
+                if tokens_q and tokens_r.isdisjoint(tokens_q):
+                    return "규칙: 최근 발화와 관련 토큰이 없음"
     return None
 
 
@@ -344,6 +470,56 @@ def _history_texts(state: QuestionContextState) -> list[str]:
 
 def _tokens(text: str) -> set[str]:
     return {token.lower() for token in _TOKEN_RE.findall(text)}
+
+
+def _content_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in _tokens(text)
+        if token not in _STOPWORDS and len(token) >= 2
+    }
+
+
+def _askable_tokens(state: QuestionContextState) -> set[str]:
+    focus = state.askable_focus or build_askable_focus(state.discussion_state)
+    tokens: set[str] = set()
+    for item in focus:
+        tokens |= _content_tokens(item_content(item))
+    discussion = state.discussion_state or {}
+    for key in ("open_issues", "uncertainties", "blockers", "decision_criteria"):
+        for item in discussion.get(key, []) or []:
+            tokens |= _content_tokens(item_content(item))
+    return tokens
+
+
+def _anchor_corpus_tokens(state: QuestionContextState) -> set[str]:
+    tokens = _askable_tokens(state)
+    for item in state.recent_transcript:
+        tokens |= _content_tokens(str(item.get("text", "")))
+    return tokens
+
+
+def _anchors_grounded(
+    text: str, anchors: list[str], corpus: set[str]
+) -> bool:
+    if not anchors:
+        return False
+    text_cf = text.casefold()
+    for anchor in anchors:
+        anchor = anchor.strip()
+        if len(anchor) < 2:
+            continue
+        if anchor.casefold() not in text_cf:
+            continue
+        anchor_tokens = _content_tokens(anchor) or _tokens(anchor)
+        if not corpus:
+            return True
+        if anchor_tokens.intersection(corpus):
+            return True
+        # Allow multi-char anchors that appear verbatim in corpus texts via token match
+        if any(token in corpus for token in _tokens(anchor)):
+            return True
+    return False
 
 
 def _jaccard(left: str, right: str) -> float:
@@ -377,30 +553,42 @@ def _evaluation_prompt_question(question: QuestionCandidate) -> dict[str, Any]:
 
 
 def apply_soft_evaluation(question: QuestionCandidate, evaluation: dict[str, Any]) -> None:
-    question.information_gain = _score(evaluation.get("information_gain", 0))
-    question.assumption_surfacing = _score(evaluation.get("assumption_surfacing", 0))
-    # Keep rule-computed non_redundancy unless explicitly provided for tests.
-    if "non_redundancy" in evaluation:
-        question.non_redundancy = _score(evaluation.get("non_redundancy", 0))
-    question.final_score = round(
-        (
-            question.information_gain
-            + question.non_redundancy
-            + question.assumption_surfacing
-        )
-        / 3,
-        3,
-    )
-    question.evaluation_reason = str(evaluation.get("reason", ""))
-    stale_reason = str(evaluation.get("stale_reason", "none"))
+    # Legacy field aliases from older evaluator payloads / tests.
+    legacy_map = {
+        "information_gain": "purpose_fit",
+        "assumption_surfacing": "critical_push",
+        "actionability": "follow_through",
+    }
+    normalized = dict(evaluation)
+    for old_key, new_key in legacy_map.items():
+        if old_key in normalized and new_key not in normalized:
+            normalized[new_key] = normalized[old_key]
 
-    if bool(evaluation.get("already_resolved")) or stale_reason == "resolved":
+    question.clarity = _score(normalized.get("clarity", 0))
+    question.specificity = _score(normalized.get("specificity", 0))
+    question.purpose_fit = _score(normalized.get("purpose_fit", 0))
+    question.critical_push = _score(normalized.get("critical_push", 0))
+    question.contextual_fit = _score(normalized.get("contextual_fit", 0))
+    question.openness = _score(normalized.get("openness", 0))
+    question.follow_through = _score(normalized.get("follow_through", 0))
+    question.neutrality = _score(normalized.get("neutrality", 0))
+    if "non_redundancy" in normalized:
+        question.non_redundancy = _score(normalized.get("non_redundancy", 0))
+
+    question.final_score = _weighted_final_score(question)
+    question.evaluation_reason = str(normalized.get("reason", ""))
+    stale_reason = str(normalized.get("stale_reason", "none"))
+
+    if bool(normalized.get("already_resolved")) or stale_reason == "resolved":
         question.status = QuestionStatus.RESOLVED
     elif stale_reason == "topic_changed":
         question.status = QuestionStatus.EXPIRED
     else:
         core_threshold_pass = (
-            question.information_gain >= 2
+            question.clarity >= 2
+            and question.specificity >= 2
+            and question.purpose_fit >= 2
+            and question.contextual_fit >= 2
             and question.non_redundancy >= 2
             and question.final_score >= 2
         )
@@ -408,6 +596,26 @@ def apply_soft_evaluation(question: QuestionCandidate, evaluation: dict[str, Any
             QuestionStatus.ELIGIBLE if core_threshold_pass else QuestionStatus.REJECTED
         )
     question.updated_at = utc_now()
+
+
+def _weighted_final_score(question: QuestionCandidate) -> float:
+    weights = CATEGORY_SCORE_WEIGHTS.get(
+        question.category, CATEGORY_SCORE_WEIGHTS["essence"]
+    )
+    scores = {
+        "clarity": question.clarity,
+        "specificity": question.specificity,
+        "purpose_fit": question.purpose_fit,
+        "critical_push": question.critical_push,
+        "contextual_fit": question.contextual_fit,
+        "openness": question.openness,
+        "follow_through": question.follow_through,
+        "neutrality": question.neutrality,
+        "non_redundancy": question.non_redundancy,
+    }
+    total_weight = sum(weights.values()) or 1.0
+    weighted = sum(scores[key] * weight for key, weight in weights.items())
+    return round(weighted / total_weight, 3)
 
 
 def apply_evaluation(question: QuestionCandidate, evaluation: dict[str, Any]) -> None:
@@ -427,20 +635,8 @@ def apply_evaluation(question: QuestionCandidate, evaluation: dict[str, Any]) ->
             question.evaluation_reason = str(
                 evaluation.get("reason", "하드 필터 실패")
             )
-            question.information_gain = _score(evaluation.get("information_gain", 0))
-            question.non_redundancy = _score(evaluation.get("non_redundancy", 0))
-            question.assumption_surfacing = _score(
-                evaluation.get("assumption_surfacing", 0)
-            )
-            question.final_score = round(
-                (
-                    question.information_gain
-                    + question.non_redundancy
-                    + question.assumption_surfacing
-                )
-                / 3,
-                3,
-            )
+            apply_soft_evaluation(question, evaluation)
+            question.status = QuestionStatus.REJECTED
             question.updated_at = utc_now()
             return
     apply_soft_evaluation(question, evaluation)
@@ -494,9 +690,44 @@ def select_top_questions(
     return questions
 
 
+def generator_state_payload(state: QuestionContextState) -> dict[str, Any]:
+    """Compact generator input: askable focus + bans + recent transcript."""
+    discussion = state.discussion_state or {}
+    focus = state.askable_focus or build_askable_focus(discussion)
+    history = state.question_history or {}
+
+    def _take(key: str, limit: int = 6) -> list[Any]:
+        items = discussion.get(key, [])
+        return items[:limit] if isinstance(items, list) else []
+
+    return {
+        "meeting_id": state.meeting_id,
+        "meeting_objective": state.meeting_objective,
+        "version": state.version,
+        "current_topic": state.current_topic,
+        "current_topic_summary": state.current_topic_summary,
+        "current_purpose": state.current_purpose,
+        "askable_focus": focus[:5],
+        "do_not_ask": build_do_not_ask(discussion),
+        "open_issues": _take("open_issues"),
+        "uncertainties": _take("uncertainties"),
+        "blockers": _take("blockers"),
+        "decision_criteria": _take("decision_criteria"),
+        "decisions": _take("decisions"),
+        "resolved_items": _take("resolved_items"),
+        "recent_transcript": list(state.recent_transcript[-12:]),
+        "question_history": {
+            "active": list(history.get("active", [])[:5]),
+            "displayed": list(history.get("displayed", [])[:5]),
+            "parked": list(history.get("parked", [])[:5]),
+        },
+    }
+
+
 def evaluator_state_payload(state: QuestionContextState) -> dict[str, Any]:
     """Compact context for soft scoring — avoids shipping full discussion dumps."""
     discussion = state.discussion_state or {}
+    focus = state.askable_focus or build_askable_focus(discussion)
 
     def _take(key: str, limit: int = 8) -> list[Any]:
         items = discussion.get(key, [])
@@ -510,9 +741,12 @@ def evaluator_state_payload(state: QuestionContextState) -> dict[str, Any]:
         "current_topic": state.current_topic,
         "current_topic_summary": state.current_topic_summary,
         "current_purpose": state.current_purpose,
+        "askable_focus": focus[:5],
+        "do_not_ask": build_do_not_ask(discussion),
         "open_issues": _take("open_issues"),
         "assumptions": _take("assumptions"),
         "decisions": _take("decisions"),
+        "resolved_items": _take("resolved_items"),
         "uncertainties": _take("uncertainties"),
         "recent_transcript": list(state.recent_transcript[-12:]),
         "question_history": {

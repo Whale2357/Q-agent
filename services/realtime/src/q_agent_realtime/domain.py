@@ -81,6 +81,7 @@ class QuestionContextState:
     discussion_state: dict[str, list[dict[str, Any] | str]] = field(
         default_factory=empty_discussion_state
     )
+    askable_focus: list[dict[str, Any]] = field(default_factory=list)
     recent_transcript: list[dict[str, Any]] = field(default_factory=list)
     question_history: dict[str, list[dict[str, Any]]] = field(
         default_factory=lambda: {
@@ -118,6 +119,7 @@ class QuestionContextState:
             history[key] = items if isinstance(items, list) else []
 
         purpose = value.get("current_purpose") or {}
+        askable = value.get("askable_focus", [])
         return cls(
             meeting_id=str(value["meeting_id"]),
             meeting_objective=str(value.get("meeting_objective", "")),
@@ -133,6 +135,7 @@ class QuestionContextState:
                 "confidence": float(purpose.get("confidence", 0.0)),
             },
             discussion_state=discussion,
+            askable_focus=askable if isinstance(askable, list) else [],
             recent_transcript=value.get("recent_transcript", [])
             if isinstance(value.get("recent_transcript", []), list)
             else [],
@@ -156,9 +159,15 @@ class QuestionCandidate:
     category: str = "essence"
     operator: str = "criterion_clarification"
     status: QuestionStatus = QuestionStatus.CANDIDATE
-    information_gain: float = 0.0
+    clarity: float = 0.0
+    specificity: float = 0.0
+    purpose_fit: float = 0.0
+    critical_push: float = 0.0
+    contextual_fit: float = 0.0
+    openness: float = 0.0
+    follow_through: float = 0.0
+    neutrality: float = 0.0
     non_redundancy: float = 0.0
-    assumption_surfacing: float = 0.0
     final_score: float = 0.0
     evaluation_reason: str = ""
     generated_at: str = field(default_factory=utc_now)
