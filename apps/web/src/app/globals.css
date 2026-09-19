@@ -464,6 +464,8 @@ legend strong { float: right; color: var(--ink); font-weight: 500; }
 .topbar::after { display: none; }
 .brand { color: #f1f3f1; }
 .brand-mark {
+  width: 42px;
+  flex: 0 0 42px;
   overflow: visible;
   color: #70dc96;
   background: transparent;
@@ -472,9 +474,14 @@ legend strong { float: right; color: var(--ink); font-weight: 500; }
   box-shadow: none;
 }
 .brand-mark::after { display: none; }
-.brain-logo-icon { width: 27px; height: 27px; overflow: visible; }
-.brain-logo-body { fill: rgba(105, 209, 141, .13); stroke: currentColor; stroke-width: 1.35; stroke-linejoin: round; }
-.brain-logo-folds { fill: none; stroke: currentColor; stroke-width: 1.15; stroke-linecap: round; stroke-linejoin: round; opacity: .82; }
+.brain-logo-icon { width: 42px; height: 28px; display: block; object-fit: contain; user-select: none; }
+.brand-name {
+  color: #78ffa7;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-shadow: 0 0 4px rgba(120, 255, 167, .9), 0 0 11px rgba(65, 238, 126, .62), 0 0 22px rgba(25, 194, 87, .32);
+}
+.brand:hover .brand-name { color: #a1ffbf; text-shadow: 0 0 5px rgba(161, 255, 191, .95), 0 0 14px rgba(65, 238, 126, .75), 0 0 26px rgba(25, 194, 87, .4); }
 .brand-subtitle { border-left-color: #303531; color: #8c948e; }
 .service-state { color: #73d997; }
 .service-state span { box-shadow: 0 0 0 4px rgba(105, 209, 141, .1); }

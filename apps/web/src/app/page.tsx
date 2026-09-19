@@ -82,10 +82,13 @@ function Icon({ name }: { name: IconName }) {
 
 function BrainLogoIcon() {
   return (
-    <svg className="brain-logo-icon" viewBox="0 0 32 32" aria-hidden="true">
-      <path className="brain-logo-body" d="M15.9 27.4c-1.9 1.6-4.9.8-5.5-1.6-2.7.4-4.9-1.8-4.5-4.5-2.5-.8-3.3-4-1.5-5.9-1.5-2.2-.3-5.2 2.3-5.8-.1-2.7 2.3-4.7 4.9-3.9 1.1-2.5 4.5-2.9 6.3-.8 1.8-2.1 5.2-1.7 6.3.8 2.6-.8 5 1.2 4.9 3.9 2.6.6 3.8 3.6 2.3 5.8 1.8 1.9 1 5.1-1.5 5.9.4 2.7-1.8 4.9-4.5 4.5-.6 2.4-3.6 3.2-5.5 1.6Z" />
-      <path className="brain-logo-folds" d="M16 5.8c-1.7 2-1.7 4.1-.1 6-1.7 1.7-1.6 4.1.1 5.7-1.5 1.8-1.3 4.4 0 6.1M11.4 8.1c-.4 2.1.7 3.5 2.7 4M7.5 12.3c2.2-.3 3.6.8 3.8 2.8M7 18.4c1.9-1.5 4.1-.8 5 1.2M20.6 8.1c.4 2.1-.7 3.5-2.7 4M24.5 12.3c-2.2-.3-3.6.8-3.8 2.8M25 18.4c-1.9-1.5-4.1-.8-5 1.2" />
-    </svg>
+    <img
+      className="brain-logo-icon"
+      src="/frankenstein-brain-logo.png"
+      alt=""
+      aria-hidden="true"
+      draggable="false"
+    />
   );
 }
 
@@ -1048,8 +1051,8 @@ export default function HomePage() {
         >
           <Icon name="history" />
         </button>
-        <a className="brand" href="/" aria-label="프랑켄슈타인 홈">
-          <span className="brand-mark"><BrainLogoIcon /></span><span>프랑켄슈타인</span>
+        <a className="brand" href="/" aria-label="STEIN 홈">
+          <span className="brand-mark"><BrainLogoIcon /></span><span className="brand-name">STEIN</span>
         </a>
         <span className="brand-subtitle">회의를 녹음하면 맥락을 실시간으로 읽고 후보 질문을 생성·평가해, 기준을 넘은 질문만 건넵니다.</span>
       </header>
