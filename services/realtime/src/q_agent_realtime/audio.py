@@ -15,6 +15,73 @@ class AudioUtterance:
     end_ms: int
 
 
+class _VadEventIterator:
+    """Convert Silero speech probabilities into streaming start/end events."""
+
+    def __init__(
+        self,
+        threshold: float,
+        sampling_rate: int,
+        min_silence_ms: int,
+        speech_pad_ms: int,
+    ):
+        from pysilero_vad import SileroVoiceActivityDetector
+
+        if sampling_rate != 16_000:
+            raise ValueError("Silero VAD requires a 16000 Hz sample rate")
+        self.model = SileroVoiceActivityDetector()
+        self.threshold = threshold
+        self.sampling_rate = sampling_rate
+        self.min_silence_samples = sampling_rate * min_silence_ms / 1000
+        self.speech_pad_samples = sampling_rate * speech_pad_ms / 1000
+        self.reset_states()
+
+    def reset_states(self) -> None:
+        self.model.reset()
+        self.triggered = False
+        self.temp_end = 0
+        self.current_sample = 0
+
+    def __call__(self, frame: np.ndarray) -> dict[str, int] | None:
+        frame = np.asarray(frame, dtype=np.float32).reshape(-1)
+        if len(frame) != self.model.chunk_samples():
+            raise ValueError(
+                f"Silero VAD requires {self.model.chunk_samples()} samples per frame"
+            )
+
+        window_size_samples = len(frame)
+        self.current_sample += window_size_samples
+        speech_probability = float(self.model.process_samples(frame))
+
+        if speech_probability >= self.threshold and self.temp_end:
+            self.temp_end = 0
+
+        if speech_probability >= self.threshold and not self.triggered:
+            self.triggered = True
+            speech_start = max(
+                0,
+                self.current_sample
+                - self.speech_pad_samples
+                - window_size_samples,
+            )
+            return {"start": int(speech_start)}
+
+        if speech_probability < self.threshold - 0.15 and self.triggered:
+            if not self.temp_end:
+                self.temp_end = self.current_sample
+            if self.current_sample - self.temp_end < self.min_silence_samples:
+                return None
+
+            speech_end = (
+                self.temp_end + self.speech_pad_samples - window_size_samples
+            )
+            self.temp_end = 0
+            self.triggered = False
+            return {"end": int(speech_end)}
+
+        return None
+
+
 class MicrophoneStream:
     def __init__(
         self,
@@ -66,14 +133,11 @@ class UtteranceDetector:
         speech_pad_ms: int = 200,
         max_utterance_seconds: float = 30.0,
     ):
-        from silero_vad import VADIterator, load_silero_vad
-
         self.sample_rate = sample_rate
-        self.vad = VADIterator(
-            load_silero_vad(onnx=True),
+        self.vad = _VadEventIterator(
             threshold=threshold,
             sampling_rate=sample_rate,
-            min_silence_duration_ms=min_silence_ms,
+            min_silence_ms=min_silence_ms,
             speech_pad_ms=speech_pad_ms,
         )
         pre_roll_frames = max(1, int((speech_pad_ms / 1000) * sample_rate / 512))

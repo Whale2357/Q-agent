@@ -11,7 +11,8 @@
 ## 1. realtime 배포
 
 빌드 컨텍스트 `services/realtime`, Dockerfile `services/realtime/Dockerfile`.
-CPU torch/torchaudio와 Silero ONNX를 설치하며 로컬 Whisper·마이크 패키지는 제외합니다.
+PyTorch/TorchAudio 없이 경량 Silero VAD 런타임을 설치하며 로컬 Whisper·마이크
+패키지는 제외합니다.
 Python 3.12 이미지로 실행하고 호스팅 서비스의 `PORT`를 우선 사용합니다.
 
 호스팅 환경변수:

@@ -12,9 +12,9 @@ RUN apt-get update \
 COPY pyproject.toml README.md ./
 COPY src ./src
 
-# Silero still needs torch/torchaudio, but API-mode servers do not need CUDA wheels.
-RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
-  && pip install --no-cache-dir . \
+# pysilero-vad bundles the Silero model in a small native wheel, avoiding the
+# multi-gigabyte PyTorch/TorchAudio runtime in the production image.
+RUN pip install --no-cache-dir . \
   && pip check
 
 ENV REALTIME_HOST=0.0.0.0 \
