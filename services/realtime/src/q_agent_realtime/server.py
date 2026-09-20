@@ -285,7 +285,7 @@ class RealtimeMeetingSession:
         await self.display_best_question(trigger="stop")
 
     async def display_best_question(self, *, trigger: str) -> dict[str, Any] | None:
-        """Expose one final question on silence, user ask, or session stop."""
+        """Expose questions on silence/ask (one) or session stop (all eligible)."""
         if (
             trigger == "ask"
             and self.repository.best_eligible_question(self.meeting_id) is None
@@ -297,6 +297,33 @@ class RealtimeMeetingSession:
             if question is not None and question.context_version != self.state.version and self._last_reeval_context_version != self.state.version:
                 await self._reevaluate_active_questions()
                 question = self.repository.best_eligible_question(self.meeting_id)
+
+            if trigger == "stop":
+                selected = self.repository.questions_by_status(
+                    self.meeting_id, [QuestionStatus.ELIGIBLE]
+                )
+                if not selected:
+                    diagnosis = self._last_diagnosis or self._diagnosis([], [])
+                    self._last_displayed_diagnosis = diagnosis
+                    return diagnosis if diagnosis.get("questions") else None
+                for item in selected:
+                    self.repository.update_question_status(
+                        item.id, QuestionStatus.DISPLAYED
+                    )
+                diagnosis = self._diagnosis(selected, selected)
+                self._last_diagnosis = diagnosis
+                self._last_displayed_diagnosis = diagnosis
+                await self.send_event(
+                    {
+                        "type": "final_question",
+                        "meeting_id": self.meeting_id,
+                        "trigger": trigger,
+                        "transcript": self.transcript_text(),
+                        "diagnosis": diagnosis,
+                    }
+                )
+                return diagnosis
+
             if question is None:
                 if trigger == "ask":
                     diagnosis = self._diagnosis([], [])
@@ -315,7 +342,6 @@ class RealtimeMeetingSession:
                 question.id, QuestionStatus.DISPLAYED
             )
             diagnosis = self._diagnosis([question], [question])
-            self._last_diagnosis = diagnosis
             self._last_displayed_diagnosis = diagnosis
             if trigger == "silence":
                 self._silence_question_emitted = True

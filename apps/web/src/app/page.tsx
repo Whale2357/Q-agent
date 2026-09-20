@@ -493,7 +493,7 @@ export default function HomePage() {
       if (event.transcript !== undefined) liveTranscriptValue.current = event.transcript;
       applyDiagnosis(event.diagnosis);
       if (event.diagnosis.rejected || event.diagnosis.questions.length === 0) {
-        setWorkspaceMessage("rejected", "질문이 비어 반려되었습니다. 회의 맥락이 더 쌓이면 다시 시도해 주세요.");
+        setWorkspaceMessage("rejected", "아직 생각 중입니다. 회의 맥락이 더 쌓이면 다시 시도해 주세요.");
       } else {
         clearWorkspaceMessage();
       }
@@ -1128,7 +1128,7 @@ export default function HomePage() {
             <button type="button" role="tab" aria-selected={mode === "record"} disabled={isThinking} onClick={() => switchMode("record")}><Icon name="mic" />녹음 · 실시간</button>
           </div>
 
-          <div className={`thought-stage${activity === "recording" ? " is-listening" : ""}${isEmittingQuestion ? " is-emitting-question" : ""}`} aria-live="polite">
+          <div className={`thought-stage${activity === "recording" || activity === "processing" || activity === "connecting" ? " is-listening" : ""}${isEmittingQuestion ? " is-emitting-question" : ""}`} aria-live="polite">
             {thoughts.map((thought) => (
               <button
                 key={thought.id}
@@ -1204,7 +1204,7 @@ export default function HomePage() {
             )}
             {error && (
               <div className={`workspace-feedback ${errorKind ?? "processing"}`} role="alert">
-                <strong>{errorKind === "network" ? "네트워크/서버 오류" : errorKind === "rejected" ? "질문 반려" : errorKind === "permission" ? "마이크 권한 필요" : "처리 오류"}</strong>
+                <strong>{errorKind === "network" ? "네트워크/서버 오류" : errorKind === "rejected" ? "생각 중" : errorKind === "permission" ? "마이크 권한 필요" : "처리 오류"}</strong>
                 <p>{error}</p>
                 {activity === "error" && mode === "record" && errorKind === "network" && (
                   <button type="button" disabled={retrying} onClick={() => void retryRecording()}>{retrying ? "재연결 중…" : "연결 재시도"}</button>

@@ -105,23 +105,36 @@ class ServerRegressionTests(unittest.TestCase):
 
     def test_text_pipeline_end_to_end_with_mock_models(self):
         discussion = {key: [] for key in DISCUSSION_KEYS}
-        discussion["open_issues"] = [{"content": "QA 완료 기준", "status": "open", "evidence_segment_ids": [1]}]
+        discussion["open_issues"] = [
+            {"content": "QA 완료 기준", "status": "open", "evidence_segment_ids": [1]},
+            {"content": "출시 일정 결정 주체", "status": "open", "evidence_segment_ids": [1]},
+        ]
         self.runtime.llms.context.chat_json = AsyncMock(return_value={
             "global_summary": "QA 기준 논의", "current_topic": "QA", "current_topic_summary": "QA 완료 기준 미정",
             "current_purpose": {"primary": "decision_making", "secondary": [], "confidence": .9},
             "discussion_state": discussion, "askable_focus": [],
         })
-        self.runtime.llms.generator.chat_json = AsyncMock(return_value={"meeting_purpose": "decision_making", "candidates": [{
-            "text": "QA 완료 여부는 어떤 기준으로 확인할까요?", "category": "essence", "operator": "criterion_clarification",
-            "anchor_terms": ["QA"], "evidence_segment_ids": [1], "detected_problem": "QA 기준 미정",
-        }]})
+        self.runtime.llms.generator.chat_json = AsyncMock(return_value={"meeting_purpose": "decision_making", "candidates": [
+            {
+                "text": "QA 완료 여부는 어떤 기준으로 확인할까요?", "category": "essence", "operator": "criterion_clarification",
+                "anchor_terms": ["QA"], "evidence_segment_ids": [1], "detected_problem": "QA 기준 미정",
+            },
+            {
+                "text": "출시 일정 결정 권한은 누구에게 있나요?", "category": "blind_spot", "operator": "assumption_challenge",
+                "anchor_terms": ["출시"], "evidence_segment_ids": [1], "detected_problem": "의사결정 주체 불명",
+            },
+        ]})
         async def evaluate(**kwargs):
             questions = json.loads(kwargs["user"])["questions"]
             return {"evaluations": [scores(question_id=q["question_id"]) for q in questions]}
         self.runtime.llms.evaluator.chat_json = AsyncMock(side_effect=evaluate)
-        response = self.client.post("/v1/text", headers={"Authorization": "Bearer test-secret"}, json={"text": "QA 완료 기준이 아직 정해지지 않았습니다."})
+        response = self.client.post(
+            "/v1/text",
+            headers={"Authorization": "Bearer test-secret"},
+            json={"text": "QA 완료 기준이 아직 정해지지 않았습니다. 출시 일정도 누가 결정하는지 모릅니다."},
+        )
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(len(response.json()["diagnosis"]["questions"]), 1)
+        self.assertEqual(len(response.json()["diagnosis"]["questions"]), 2)
         self.assertTrue(self.runtime.session_gate.try_acquire_text_slot())
 
     def test_slow_ask_does_not_block_audio_or_stop(self):
@@ -194,6 +207,25 @@ class SessionRegressionTests(unittest.IsolatedAsyncioTestCase):
         await queued
         self.assertIs(self.session._utterance_queue.get_nowait(), second)
         self.session._utterance_queue.task_done()
+
+    async def test_stop_returns_all_eligible_questions(self):
+        first = candidate(self.session.meeting_id, id="q1", category="essence", status=QuestionStatus.ELIGIBLE)
+        second = candidate(
+            self.session.meeting_id,
+            id="q2",
+            category="blind_spot",
+            text="빠진 이해관계자는 누구인가요?",
+            status=QuestionStatus.ELIGIBLE,
+        )
+        self.runtime.repository.save_questions([first, second])
+        diagnosis = await self.session.display_best_question(trigger="stop")
+        self.assertIsNotNone(diagnosis)
+        self.assertEqual({item["id"] for item in diagnosis["questions"]}, {"q1", "q2"})
+        self.assertEqual(len(self.session._last_displayed_diagnosis["questions"]), 2)
+        remaining = self.runtime.repository.questions_by_status(
+            self.session.meeting_id, [QuestionStatus.ELIGIBLE]
+        )
+        self.assertEqual(remaining, [])
 
 
 class ConfigValidationTests(unittest.TestCase):
